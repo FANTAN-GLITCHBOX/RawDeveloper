@@ -31,6 +31,9 @@ tags = [
     (50721, "2i", 9, srat(M), True), (50778, "H", 1, 21, True),
     (50728, "2I", 3, [9000, 10000, 10000, 10000, 4500, 10000], True), (50717, "I", 1, 4256, True),
     (50714, "H", 1, 256, True),
+    # レンズ情報（レンズ補正のテスト用）
+    (0xA434, "s", 0, "FE 24-70mm F4 ZA OSS", True), (0x920A, "2I", 1, (24, 1), True),
+    (0x829D, "2I", 1, (4, 1), True),
 ]
 tifffile.imwrite(out, data, photometric=32803, extratags=tags)
 print("wrote", out)

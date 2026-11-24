@@ -49,7 +49,7 @@ Params Params::defaultsForImage() {
     Params p;
     p.sharpenAmount = 0;
     p.nrColor = 0;
-    p.lens = QJsonObject{{"profile", false}};
+    p.lensProfile = false;
     return p;
 }
 
@@ -75,7 +75,14 @@ QJsonObject Params::toJson() const {
                               {"gain", toArr(gain.data(), 3)}, {"offset", toArr(offset.data(), 3)}};
     o["sharpen"] = QJsonObject{{"amount", sharpenAmount}, {"radius", sharpenRadius}, {"masking", sharpenMasking}};
     o["nr"] = QJsonObject{{"luma", nrLuma}, {"color", nrColor}};
-    if (!lens.isEmpty()) o["lens"] = lens;
+    o["lens"] = QJsonObject{{"profile", lensProfile},
+                            {"lens", lensKey.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(lensKey)},
+                            {"distortion", lensDistortion},
+                            {"vignetting", lensVignetting},
+                            {"ca", lensCa},
+                            {"autotrim", lensAutotrim},
+                            {"manual_distortion", lensManualDistortion},
+                            {"manual_vignetting", lensManualVignetting}};
     o["crop"] = QJsonObject{{"x", cropX}, {"y", cropY}, {"w", cropW}, {"h", cropH}, {"angle", cropAngle},
                             {"aspect", cropAspect}};
     o["auto"] = QJsonObject{{"strength", autoStrength}};
@@ -123,7 +130,15 @@ Params Params::fromJson(const QJsonObject& o) {
     const QJsonObject nr = o.value("nr").toObject();
     p.nrLuma = num(nr, "luma", 0);
     p.nrColor = num(nr, "color", 25);
-    p.lens = o.value("lens").toObject();
+    const QJsonObject ln = o.value("lens").toObject();
+    p.lensProfile = ln.value("profile").toBool(true);
+    p.lensKey = ln.value("lens").isString() ? ln.value("lens").toString() : QString();
+    p.lensDistortion = num(ln, "distortion", 100);
+    p.lensVignetting = num(ln, "vignetting", 100);
+    p.lensCa = ln.value("ca").toBool(true);
+    p.lensAutotrim = ln.value("autotrim").toBool(true);
+    p.lensManualDistortion = num(ln, "manual_distortion", 0);
+    p.lensManualVignetting = num(ln, "manual_vignetting", 0);
     const QJsonObject c = o.value("crop").toObject();
     p.cropX = num(c, "x", 0);
     p.cropY = num(c, "y", 0);
@@ -165,7 +180,18 @@ void resetPanel(Params& p, Panel panel) {
             p.nrLuma = d.nrLuma;
             p.nrColor = d.nrColor;
             break;
-        case Panel::Lens: p.lens = QJsonObject{}; break;
+        case Panel::Lens: {
+            const bool prof = p.lensProfile;
+            p.lensProfile = d.lensProfile && prof;
+            p.lensKey.clear();
+            p.lensDistortion = d.lensDistortion;
+            p.lensVignetting = d.lensVignetting;
+            p.lensCa = d.lensCa;
+            p.lensAutotrim = d.lensAutotrim;
+            p.lensManualDistortion = p.lensManualVignetting = 0;
+            p.lensProfile = true;
+            break;
+        }
         case Panel::Crop:
             p.cropX = p.cropY = 0;
             p.cropW = p.cropH = 1;

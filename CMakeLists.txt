@@ -24,6 +24,20 @@ else()
   set(LIBRAW_TARGET PkgConfig::LIBRAW)
 endif()
 
+# Lensfun：Windows では vcpkg（ヘッダーとライブラリを直接探す）、Linux では pkg-config
+find_path(LENSFUN_INCLUDE_DIR lensfun/lensfun.h)
+find_library(LENSFUN_LIBRARY NAMES lensfun)
+if(LENSFUN_INCLUDE_DIR AND LENSFUN_LIBRARY)
+  add_library(lensfun_lib UNKNOWN IMPORTED)
+  set_target_properties(lensfun_lib PROPERTIES IMPORTED_LOCATION "${LENSFUN_LIBRARY}"
+                        INTERFACE_INCLUDE_DIRECTORIES "${LENSFUN_INCLUDE_DIR}")
+  set(LENSFUN_TARGET lensfun_lib)
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(LENSFUN REQUIRED IMPORTED_TARGET lensfun)
+  set(LENSFUN_TARGET PkgConfig::LENSFUN)
+endif()
+
 # 現像エンジン（画面に依存しない部分）
 add_library(rdengine STATIC
   src/engine/Image.h
@@ -32,10 +46,11 @@ add_library(rdengine STATIC
   src/engine/Params.h src/engine/Params.cpp
   src/engine/Pipeline.h src/engine/Pipeline.cpp
   src/engine/Auto.h src/engine/Auto.cpp
+  src/engine/Lens.h src/engine/Lens.cpp
   src/engine/RawLoader.h src/engine/RawLoader.cpp
 )
 target_include_directories(rdengine PUBLIC src)
-target_link_libraries(rdengine PUBLIC ${LIBRAW_TARGET} Qt6::Core)
+target_link_libraries(rdengine PUBLIC ${LIBRAW_TARGET} ${LENSFUN_TARGET} Qt6::Core)
 if(WIN32)
   target_compile_definitions(rdengine PUBLIC NOMINMAX)
 endif()
@@ -55,6 +70,10 @@ target_link_libraries(RawDeveloper PRIVATE rdengine Qt6::Widgets Qt6::Concurrent
 
 install(TARGETS RawDeveloper RUNTIME DESTINATION .)
 
+# レンズデータベースを実行ファイルの隣（lensfun フォルダ）へ
+add_custom_command(TARGET RawDeveloper POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/data/lensfun $<TARGET_FILE_DIR:RawDeveloper>/lensfun)
+
 # エンジンの動作確認用（コンソール）
 add_executable(rd_selftest tests/engine_selftest.cpp)
 target_link_libraries(rd_selftest PRIVATE rdengine)
@@ -63,3 +82,4 @@ install(TARGETS rd_selftest RUNTIME DESTINATION .)
 # Python 版との一致確認用：リニア画像(.f32)＋パラメータ(JSON) → 現像結果(.f32)
 add_executable(rd_develop tests/develop_tool.cpp)
 target_link_libraries(rd_develop PRIVATE rdengine)
+target_compile_definitions(rd_develop PRIVATE LENS_DIR="${CMAKE_SOURCE_DIR}/data/lensfun")

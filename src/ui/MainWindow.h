@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 
+#include "engine/Lens.h"
 #include "engine/Params.h"
 #include "engine/RawLoader.h"
 
@@ -35,6 +36,7 @@ struct Session {
     int historyPos = 0;
     QJsonObject sidecar;                 // .rdev の他の項目（★・ラベル等）を保つ
     std::pair<double, double> asShotTT{5500, 0};
+    std::shared_ptr<LensInfo> lens;      // EXIF から判別したレンズ
     QImage last;                         // 直近の表示画像
 };
 
@@ -104,7 +106,11 @@ private:
     QToolButton* compareBtn_ = nullptr;
 
     std::unique_ptr<Session> s_;
-    QFutureWatcher<std::shared_ptr<LoadedRaw>> loadWatcher_;
+    struct LoadResult {
+        std::shared_ptr<LoadedRaw> src;
+        std::shared_ptr<LensInfo> lens;
+    };
+    QFutureWatcher<LoadResult> loadWatcher_;
     QFutureWatcher<RenderResult> renderWatcher_;
     QFutureWatcher<RenderResult> hiresWatcher_;
     QFutureWatcher<RoiResult> roiWatcher_;

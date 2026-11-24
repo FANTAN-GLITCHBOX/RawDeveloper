@@ -3,6 +3,7 @@
 #include <QSettings>
 #include <QTimer>
 
+#include "engine/Lens.h"
 #include "ui/MainWindow.h"
 #include "ui/Theme.h"
 
@@ -11,6 +12,7 @@ int main(int argc, char* argv[]) {
     QApplication::setOrganizationName("RawDeveloper");
     QApplication::setApplicationName("RawDeveloper");
     rd::theme::apply(app);
+    rd::LensDb::setDataDirs({(QCoreApplication::applicationDirPath() + "/lensfun").toStdString()});
     rd::MainWindow w;
     w.show();
     const QString arg = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();

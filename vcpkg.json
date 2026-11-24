@@ -2,6 +2,7 @@
   "name": "rawdeveloper",
   "version-string": "0.2.0",
   "dependencies": [
-    "libraw"
+    "libraw",
+    "lensfun"
   ]
 }

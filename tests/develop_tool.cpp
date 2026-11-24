@@ -40,8 +40,20 @@ int main(int argc, char** argv) {
             af.open(QIODevice::WriteOnly);
             af.write(QJsonDocument(a.toJson()).toJson());
         }
+    rd::LensInfo li;
+    bool haveLens = false;
+    for (int i = 4; i + 4 < argc; ++i)
+        if (std::strcmp(argv[i], "--lens") == 0) {
+            rd::LensDb::setDataDirs({LENS_DIR});
+            li.autoKey = argv[i + 1];
+            li.crop = std::strtof(argv[i + 2], nullptr);
+            li.focal = std::strtof(argv[i + 3], nullptr);
+            li.aperture = std::strtof(argv[i + 4], nullptr);
+            haveLens = true;
+        }
     rd::DevelopOptions o;
     o.scale = 0.5f;
+    if (haveLens) o.lens = &li;
     writeF32(argv[3], rd::develop(lin, p, asShot, o));
     return 0;
 }

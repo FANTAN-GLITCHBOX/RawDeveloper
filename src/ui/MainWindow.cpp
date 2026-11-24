@@ -107,7 +107,10 @@ QImage toQImage(const ImageF& g) {
 QString sidecarPath(const QString& path) { return path + ".rdev"; }
 
 QString geomKey(const Params& p) {
-    return QString("%1,%2,%3,%4,%5,%6").arg(p.cropX).arg(p.cropY).arg(p.cropW).arg(p.cropH).arg(p.cropAngle).arg(p.enabled.crop);
+    return QString("%1,%2,%3,%4,%5,%6|%7,%8,%9,%10,%11,%12,%13")
+        .arg(p.cropX).arg(p.cropY).arg(p.cropW).arg(p.cropH).arg(p.cropAngle).arg(p.enabled.crop)
+        .arg(p.enabled.lens).arg(p.lensProfile).arg(p.lensKey).arg(p.lensDistortion).arg(p.lensCa)
+        .arg(p.lensAutotrim).arg(p.lensManualDistortion);
 }
 
 }  // namespace
@@ -118,7 +121,7 @@ MainWindow::MainWindow() {
     setAcceptDrops(true);
     buildUi();
     buildActions();
-    connect(&loadWatcher_, &QFutureWatcher<std::shared_ptr<LoadedRaw>>::finished, this, &MainWindow::loaded);
+    connect(&loadWatcher_, &QFutureWatcher<LoadResult>::finished, this, &MainWindow::loaded);
     connect(&renderWatcher_, &QFutureWatcher<RenderResult>::finished, this, &MainWindow::rendered);
     connect(&hiresWatcher_, &QFutureWatcher<RenderResult>::finished, this, &MainWindow::hiresDone);
     connect(&roiWatcher_, &QFutureWatcher<RoiResult>::finished, this, [this] {
@@ -468,11 +471,17 @@ void MainWindow::openFile(const QString& path) {
     viewer_->resetView();
     compareTarget_.reset();
     viewer_->setBeforeLabel(QStringLiteral("補正前"));
-    loadWatcher_.setFuture(QtConcurrent::run([path] { return loadAny(path, true); }));
+    loadWatcher_.setFuture(QtConcurrent::run([path] {
+        LoadResult r;
+        r.src = loadAny(path, true);
+        r.lens = std::make_shared<LensInfo>(LensDb::get().identify(r.src->meta));
+        return r;
+    }));
 }
 
 void MainWindow::loaded() {
-    auto src = loadWatcher_.result();
+    const LoadResult lr = loadWatcher_.result();
+    auto src = lr.src;
     if (!s_) return;
     // 読み込み中に別の写真が選ばれたら、そちらを読み直す
     if (loadWatcher_.isRunning()) return;
@@ -481,6 +490,8 @@ void MainWindow::loaded() {
         return;
     }
     s_->src = src;
+    s_->lens = lr.lens;
+    panel_->setLensStatus(QString::fromStdString(lr.lens->status));
     auto prev = std::make_shared<ImageF>(downscale(src->linear, kPreviewEdge));
     s_->scale = float(prev->width) / std::max(1, src->meta.fullWidth);
     s_->preview = prev;
@@ -525,6 +536,13 @@ void MainWindow::requestRender() {
                         (cropMode ? "c" : "");
     const bool needBefore = key != beforeKey_;
     Params before = compareTarget_ ? *compareTarget_ : (s_->isRaw ? Params::defaults() : Params::defaultsForImage());
+    if (!compareTarget_) {
+        // 補正前も、レンズ補正と切り抜きは同じにして位置を合わせる（比較で形がずれないように）
+        before.enabled.lens = p.enabled.lens;
+        before.lensProfile = p.lensProfile; before.lensKey = p.lensKey; before.lensDistortion = p.lensDistortion;
+        before.lensVignetting = 0; before.lensCa = p.lensCa; before.lensAutotrim = p.lensAutotrim;
+        before.lensManualDistortion = p.lensManualDistortion; before.lensManualVignetting = 0;
+    }
     before.cropX = p.cropX; before.cropY = p.cropY; before.cropW = p.cropW; before.cropH = p.cropH;
     before.cropAngle = p.cropAngle; before.enabled.crop = p.enabled.crop;
     const bool hasTarget = compareTarget_.has_value();
@@ -537,7 +555,8 @@ void MainWindow::requestRender() {
     if (cropMode) sizeP.enabled.crop = false;
     const auto [fw, fh] = outputSize(sizeP, s_->src->meta.fullWidth, s_->src->meta.fullHeight);
     const QSize fullSize(fw, fh);
-    renderWatcher_.setFuture(QtConcurrent::run([lin, p, asShot, scale, detail, cropMode, ver, needBefore, before, hasTarget, path, fullSize] {
+    auto lens = s_->lens;
+    renderWatcher_.setFuture(QtConcurrent::run([lin, p, asShot, scale, detail, cropMode, ver, needBefore, before, hasTarget, path, fullSize, lens] {
         RenderResult r;
         r.path = path;
         r.version = ver;
@@ -545,6 +564,7 @@ void MainWindow::requestRender() {
         o.scale = scale;
         o.detail = detail;
         o.doCrop = !cropMode;
+        o.lens = lens.get();
         const ImageF g = develop(*lin, p, asShot, o);
         r.after = toQImage(g);
         r.full = fullSize;
@@ -600,7 +620,8 @@ void MainWindow::requestHires() {
     auto full = s_->full;
     const quint64 ver = version_;
     viewer_->setMessage(QStringLiteral("高精細表示を準備中…"));
-    hiresWatcher_.setFuture(QtConcurrent::run([p, path, asShot, fullW, full, ver, outSize] {
+    auto lens = s_->lens;
+    hiresWatcher_.setFuture(QtConcurrent::run([p, path, asShot, fullW, full, ver, outSize, lens] {
         RenderResult r;
         r.path = path;
         r.version = ver;
@@ -612,6 +633,7 @@ void MainWindow::requestHires() {
         }
         DevelopOptions o;
         o.scale = float(f->linear.width) / std::max(1, fullW);
+        o.lens = lens.get();
         const ImageF g = develop(f->linear, p, asShot, o);
         r.after = toQImage(g);
         r.full = outSize;
@@ -671,12 +693,13 @@ void MainWindow::requestRoi() {
     const auto asShot = s_->src->asShotGains;
     const QString path = s_->path;
     const quint64 ver = version_;
-    roiWatcher_.setFuture(QtConcurrent::run([full, rLin, vis, scale, p, asShot, path, ver] {
+    auto lens = s_->lens;
+    roiWatcher_.setFuture(QtConcurrent::run([full, rLin, vis, scale, p, asShot, path, ver, lens] {
         RoiResult r;
         r.path = path;
         r.version = ver;
         r.rect = vis;
-        r.img = toQImage(developRegion(full->linear, p, asShot, rLin.x(), rLin.y(), rLin.width(), rLin.height(), scale));
+        r.img = toQImage(developRegion(full->linear, p, asShot, rLin.x(), rLin.y(), rLin.width(), rLin.height(), scale, lens.get()));
         return r;
     }));
 }
@@ -840,10 +863,12 @@ void MainWindow::exportJpeg() {
     const QString path = s_->path;
     const auto asShot = s_->src->asShotGains;
     auto full = s_->full;
+    auto lens = s_->lens;
     QtConcurrent::run([=] {
         auto f = full ? full : loadAny(path, false);
         if (!f->error.empty()) return QString::fromStdString(f->error);
         DevelopOptions o;
+        o.lens = lens.get();
         const QImage img = toQImage(develop(f->linear, p, asShot, o));
         QImageWriter w(out, "jpg");
         w.setQuality(92);
@@ -868,6 +893,7 @@ void MainWindow::runScriptedTest(const QString& prefix) {
         std::printf("shot %d: version %llu, history %d, compare %d, fit %d, zoom %.3f, roi %d\n", n,
                     (unsigned long long)version_, s_ ? int(s_->history.size()) : -1, int(viewer_->compare()),
                     int(viewer_->isFit()), viewer_->zoom(), int(!viewer_->visibleFullRect().isEmpty()));
+        if (s_ && s_->lens) std::printf("  lens: %s (active %d)\n", s_->lens->status.c_str(), int(lensActive(s_->params, s_->lens.get())));
         std::fflush(stdout);
     };
     auto steps = std::make_shared<std::vector<Step>>(std::vector<Step>{

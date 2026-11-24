@@ -1,6 +1,8 @@
 #include "ui/DevelopPanel.h"
 
+#include <QCheckBox>
 #include <QComboBox>
+#include <QCompleter>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -12,6 +14,7 @@
 #include <cmath>
 
 #include "engine/Color.h"
+#include "engine/Lens.h"
 #include "ui/CurveEditor.h"
 #include "ui/Theme.h"
 #include "ui/Widgets.h"
@@ -208,10 +211,85 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
     }
     addSection(crop, Panel::Crop);
 
-    // レンズ補正は次の段階で移植
-    auto* lens = new Section(QStringLiteral("レンズ補正"), true, false);
-    lens->add(hint(QStringLiteral("C++ 版では次の段階で対応します（Lensfun）")));
-    v_->addWidget(lens);
+    // ---- レンズ補正
+    auto* lens = new Section(QStringLiteral("レンズ補正"), true);
+    {
+        auto* tabs = new QTabWidget;
+        auto* prof = new QWidget;
+        auto* pv = new QVBoxLayout(prof);
+        pv->setContentsMargins(8, 4, 8, 4);
+        lensProfile_ = new QCheckBox(QStringLiteral("プロファイル補正を使用"));
+        lensStatus_ = new QLabel;
+        lensStatus_->setWordWrap(true);
+        lensStatus_->setStyleSheet("color:#8c8c8c; background: transparent;");
+        auto* hl = new QHBoxLayout;
+        hl->addWidget(new QLabel(QStringLiteral("レンズ")));
+        lensCombo_ = new QComboBox;
+        lensCombo_->setEditable(true);
+        lensCombo_->setInsertPolicy(QComboBox::NoInsert);
+        lensCombo_->setMinimumContentsLength(6);
+        lensCombo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        lensCombo_->addItem(QStringLiteral("自動（EXIF から検出）"), QString());
+        QStringList names;
+        const auto& db = LensDb::get();
+        for (const auto& k : db.allKeys()) {
+            const QString name = QString::fromStdString(db.displayName(k));
+            lensCombo_->addItem(name, QString::fromStdString(k));
+            names << name;
+        }
+        auto* comp = new QCompleter(names, lensCombo_);
+        comp->setCaseSensitivity(Qt::CaseInsensitive);
+        comp->setFilterMode(Qt::MatchContains);
+        lensCombo_->setCompleter(comp);
+        hl->addWidget(lensCombo_, 1);
+        pv->addWidget(lensProfile_);
+        pv->addWidget(lensStatus_);
+        pv->addLayout(hl);
+        for (auto [key, label] : {std::pair{"lens.distortion", "歪曲"}, std::pair{"lens.vignetting", "周辺光量"}}) {
+            auto* r = new ParamRow(key, QString::fromUtf8(label), 0, 200, 100, 0, 1, "%");
+            connect(r, &ParamRow::changed, this, &DevelopPanel::rowChanged);
+            pv->addWidget(r);
+            rows_[key] = r;
+        }
+        lensCa_ = new QCheckBox(QStringLiteral("色収差を除去"));
+        lensTrim_ = new QCheckBox(QStringLiteral("端の空白を自動トリミング"));
+        pv->addWidget(lensCa_);
+        pv->addWidget(lensTrim_);
+        tabs->addTab(prof, QStringLiteral("プロファイル"));
+        auto* man = new QWidget;
+        auto* mv = new QVBoxLayout(man);
+        mv->setContentsMargins(0, 4, 0, 4);
+        for (auto [key, label] : {std::pair{"lens.manual_distortion", "歪曲"}, std::pair{"lens.manual_vignetting", "周辺光量"}}) {
+            auto* r = new ParamRow(key, QString::fromUtf8(label), -100, 100, 0, 0, 1);
+            connect(r, &ParamRow::changed, this, &DevelopPanel::rowChanged);
+            mv->addWidget(r);
+            rows_[key] = r;
+        }
+        mv->addStretch(1);
+        tabs->addTab(man, QStringLiteral("手動"));
+        lens->add(tabs);
+        auto onCheck = [this](QCheckBox* cb, bool Params::*field, const QString& desc) {
+            connect(cb, &QCheckBox::toggled, this, [this, field, desc](bool on) {
+                if (updating_) return;
+                p_.*field = on;
+                p_.enabled.lens = true;
+                syncSections();
+                emitChange(true, desc);
+            });
+        };
+        onCheck(lensProfile_, &Params::lensProfile, QStringLiteral("レンズプロファイル"));
+        onCheck(lensCa_, &Params::lensCa, QStringLiteral("色収差除去"));
+        onCheck(lensTrim_, &Params::lensAutotrim, QStringLiteral("自動トリミング"));
+        connect(lensCombo_, &QComboBox::activated, this, [this](int i) {
+            if (updating_) return;
+            p_.lensKey = lensCombo_->itemData(i).toString();
+            p_.enabled.lens = true;
+            syncSections();
+            emitChange(true, QStringLiteral("レンズを選択"));
+        });
+        if (!db.ok()) lensStatus_->setText(QStringLiteral("レンズデータベースが見つかりません（手動補正は使えます）"));
+    }
+    addSection(lens, Panel::Lens);
     v_->addStretch(1);
 }
 
@@ -294,6 +372,17 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
     rows_["nr.luma"]->setValue(p_.nrLuma);
     rows_["nr.color"]->setValue(p_.nrColor);
     rows_["crop.angle"]->setValue(p_.cropAngle);
+    rows_["lens.distortion"]->setValue(p_.lensDistortion);
+    rows_["lens.vignetting"]->setValue(p_.lensVignetting);
+    rows_["lens.manual_distortion"]->setValue(p_.lensManualDistortion);
+    rows_["lens.manual_vignetting"]->setValue(p_.lensManualVignetting);
+    lensProfile_->setChecked(p_.lensProfile);
+    lensCa_->setChecked(p_.lensCa);
+    lensTrim_->setChecked(p_.lensAutotrim);
+    {
+        const int i = lensCombo_->findData(p_.lensKey);
+        lensCombo_->setCurrentIndex(i < 0 ? 0 : i);
+    }
     syncSections();
     updating_ = false;
 }
@@ -301,6 +390,10 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
 void DevelopPanel::setHistogram(const std::vector<float>& h) { curve_->canvas()->setHistogram(h); }
 
 double DevelopPanel::aspectValue() const { return aspect_->currentData().toDouble(); }
+
+void DevelopPanel::setLensStatus(const QString& text) {
+    if (LensDb::get().ok()) lensStatus_->setText(text);
+}
 
 void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
     if (updating_) return;
@@ -312,7 +405,9 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
                                               {"vibrance", "自然な彩度"}, {"saturation", "彩度"},
                                               {"sharpen.amount", "シャープ"}, {"sharpen.radius", "シャープ半径"},
                                               {"sharpen.masking", "シャープのマスク"}, {"nr.luma", "輝度ノイズ"},
-                                              {"nr.color", "カラーノイズ"}, {"crop.angle", "角度"}};
+                                              {"nr.color", "カラーノイズ"}, {"crop.angle", "角度"},
+                                              {"lens.distortion", "歪曲（プロファイル）"}, {"lens.vignetting", "周辺光量（プロファイル）"},
+                                              {"lens.manual_distortion", "歪曲（手動）"}, {"lens.manual_vignetting", "周辺光量（手動）"}};
     if (key == "temp" || key == "tint") {
         if (p_.wbMode == "as_shot") {
             p_.temp = static_cast<float>(asShot_.first);
@@ -340,11 +435,16 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
     else if (key == "nr.luma") p_.nrLuma = f;
     else if (key == "nr.color") p_.nrColor = f;
     else if (key == "crop.angle") p_.cropAngle = f;
+    else if (key == "lens.distortion") p_.lensDistortion = f;
+    else if (key == "lens.vignetting") p_.lensVignetting = f;
+    else if (key == "lens.manual_distortion") p_.lensManualDistortion = f;
+    else if (key == "lens.manual_vignetting") p_.lensManualVignetting = f;
     // そのパネルがオフのまま値を動かしたら、効果が見えるようにオンにする
     const Panel panel = key.startsWith("hsl:") ? Panel::Hsl
                         : key.startsWith("sharpen") || key.startsWith("nr") ? Panel::Detail
                         : key == "crop.angle" ? Panel::Crop
-                                              : Panel::Basic;
+                        : key.startsWith("lens.") ? Panel::Lens
+                                                  : Panel::Basic;
     if (!enabledFlag(p_, panel)) {
         enabledFlag(p_, panel) = true;
         syncSections();

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "engine/Image.h"
+#include "engine/Lens.h"
 #include "engine/Params.h"
 
 namespace rd {
@@ -25,6 +26,7 @@ struct DevelopOptions {
     float scale = 1.0f;    // 元画像に対する縮小率（シャープ半径などの換算）
     bool detail = true;    // false：ノイズ低減・シャープを省略（スライダー操作中）
     bool doCrop = true;    // false：回転のみ（切り抜きツール表示用）
+    const LensInfo* lens = nullptr;  // レンズ補正用（なければ手動補正のみ）
 };
 
 // リニア画像を現像し、ガンマ 0..1 の RGB を返す
@@ -39,7 +41,7 @@ bool regionSupported(const Params& p);
 // 切り抜き後の座標で (rx, ry, rw, rh) の範囲だけを、フル解像度のリニア画像から現像する
 // scale < 1 なら縮小してから現像する（ズームが 100% 未満のとき、画面の画素数に合わせて速く）
 ImageF developRegion(const ImageF& lin, const Params& p, const std::array<float, 3>& asShot, int rx, int ry, int rw,
-                     int rh, float scale = 1.0f);
+                     int rh, float scale = 1.0f, const LensInfo* lens = nullptr);
 
 std::vector<std::uint8_t> toRgb8(const ImageF& g);
 std::vector<std::uint16_t> toRgb16(const ImageF& g);

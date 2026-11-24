@@ -8,7 +8,9 @@
 
 #include "engine/Params.h"
 
+class QCheckBox;
 class QComboBox;
+class QLabel;
 class QPushButton;
 class QToolButton;
 class QTabWidget;
@@ -34,6 +36,7 @@ public:
     QToolButton* wbPickButton() const { return wbPick_; }
     QPushButton* cropButton() const { return cropBtn_; }
     double aspectValue() const;  // 0 = 自由、-1 = 元の比率
+    void setLensStatus(const QString& text);
 
 signals:
     void paramsChanged(const rd::Params& p, bool final, const QString& desc);
@@ -66,6 +69,11 @@ private:
     CurveEditor* curve_ = nullptr;
     QPushButton* cropBtn_ = nullptr;
     QComboBox* aspect_ = nullptr;
+    QCheckBox* lensProfile_ = nullptr;
+    QCheckBox* lensCa_ = nullptr;
+    QCheckBox* lensTrim_ = nullptr;
+    QComboBox* lensCombo_ = nullptr;
+    QLabel* lensStatus_ = nullptr;
 };
 
 }  // namespace rd

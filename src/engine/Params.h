@@ -39,8 +39,15 @@ struct Params {
     // ディテール
     float sharpenAmount = 40, sharpenRadius = 1.0f, sharpenMasking = 0;
     float nrLuma = 0, nrColor = 25;
-    // レンズ（C++ 版では次の段階で使う。値は保持）
-    QJsonObject lens;
+    // レンズ補正
+    bool lensProfile = true;      // プロファイル補正を使う
+    QString lensKey;              // 空 = 自動検出、"メーカー|モデル" = 手動選択
+    float lensDistortion = 100;   // 適用量 %
+    float lensVignetting = 100;
+    bool lensCa = true;
+    bool lensAutotrim = true;
+    float lensManualDistortion = 0;
+    float lensManualVignetting = 0;
     // 切り抜き
     float cropX = 0, cropY = 0, cropW = 1, cropH = 1, cropAngle = 0;
     QString cropAspect = "free";

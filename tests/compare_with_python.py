@@ -48,24 +48,35 @@ with open(fin, "wb") as f:
     f.write(np.ascontiguousarray(lin).tobytes())
 
 
-def run_cpp(prm, auto_out=None):
+def run_cpp(prm, auto_out=None, lens=None):
     pj = os.path.join(tmp, "p.json")
     fo = os.path.join(tmp, "out.f32")
     json.dump(prm, open(pj, "w"))
     cmd = [tool, fin, pj, fo, *[str(v) for v in as_shot]]
     if auto_out:
         cmd += ["--auto", auto_out]
+    if lens:
+        cmd += ["--lens", *[str(v) for v in lens]]
     subprocess.run(cmd, check=True)
     d = np.fromfile(fo, np.uint8)
     ww, hh = np.frombuffer(d[:8].tobytes(), np.int32)
     return np.frombuffer(d[8:].tobytes(), np.float32).reshape(hh, ww, 3)
 
 
+LENS = ("Sony|FE 24-70mm f/4 ZA OSS", 1.0, 24.0, 4.0)
+cases["レンズ（プロファイル）"] = {"lens": {"profile": True, "lens": None, "distortion": 100, "vignetting": 100,
+                                       "ca": True, "autotrim": True}}
+cases["レンズ（手動）"] = {"lens": {"profile": False, "manual_distortion": 40, "manual_vignetting": 30}}
+
 worst = 0.0
 for name, delta in cases.items():
     prm = P.merged(delta)
-    py = pipeline.develop(lin, prm, as_shot, None, scale=0.5)
-    cp = run_cpp(prm)
+    use_lens = name.startswith("レンズ")
+    if not use_lens:
+        prm["lens"]["profile"] = False
+    info = {"lens_key": LENS[0], "crop": LENS[1], "focal": LENS[2], "aperture": LENS[3]} if use_lens else None
+    py = pipeline.develop(lin, prm, as_shot, info, scale=0.5)
+    cp = run_cpp(prm, lens=LENS if use_lens else None)
     if py.shape != cp.shape:
         print(f"{name}: サイズ不一致 {py.shape} {cp.shape}")
         worst = 99

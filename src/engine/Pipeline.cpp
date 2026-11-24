@@ -332,7 +332,16 @@ std::pair<double, double> rotatedRectMaxArea(double w, double h, double angle) {
     return {(w * ca - h * sa) / cos2a, (h * ca - w * sa) / cos2a};
 }
 
-ImageF develop(const ImageF& lin, const Params& p, const std::array<float, 3>& asShot, const DevelopOptions& o) {
+ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>& asShot, const DevelopOptions& o) {
+    // レンズ補正（リニアのまま、座標の付け替えと周辺減光）
+    ImageF lensed;
+    const bool useLens = lensActive(p, o.lens) || (p.enabled.lens && (std::abs(p.lensManualDistortion) > 0.5f ||
+                                                                     std::abs(p.lensManualVignetting) > 0.5f));
+    if (useLens) {
+        static const LensInfo none;
+        lensed = lensRemapRegion(linIn, p, o.lens ? *o.lens : none, 0, 0, linIn.width, linIn.height);
+    }
+    const ImageF& lin = useLens ? lensed : linIn;
     const int w = lin.width, h = lin.height;
     ImageF g;
     g.resize(w, h);
@@ -446,13 +455,12 @@ std::pair<int, int> outputSize(const Params& p, int w, int h) {
 }
 
 bool regionSupported(const Params& p) {
-    if (p.enabled.crop && std::abs(p.cropAngle) >= 1e-3f) return false;
-    if (p.enabled.lens && p.lens.value("active").toBool(false)) return false;
-    return true;
+    // 回転があると見えている範囲と元画像の範囲が対応しないので、全体を作り直す
+    return !(p.enabled.crop && std::abs(p.cropAngle) >= 1e-3f);
 }
 
 ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<float, 3>& asShot, int rx, int ry, int rw,
-                     int rh, float scale) {
+                     int rh, float scale, const LensInfo* lens) {
     scale = std::clamp(scale, 0.05f, 1.0f);
     const int W = lin.width, H = lin.height;
     int ox = 0, oy = 0;
@@ -472,9 +480,17 @@ ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<floa
     const int x1 = std::clamp(ox + rx + rw + m, 0, W), y1 = std::clamp(oy + ry + rh + m, 0, H);
     ImageF sub;
     if (x1 <= x0 || y1 <= y0) return sub;
-    sub.resize(x1 - x0, y1 - y0);
-    for (int y = y0; y < y1; ++y) std::copy(lin.px(x0, y), lin.px(x1, y), sub.px(0, y - y0));
     Params p = pIn;
+    static const LensInfo none;
+    if (lensActive(p, lens) || (p.enabled.lens && (std::abs(p.lensManualDistortion) > 0.5f ||
+                                                   std::abs(p.lensManualVignetting) > 0.5f))) {
+        // レンズ補正は元画像の座標で計算できるので、範囲だけ作る
+        sub = lensRemapRegion(lin, p, lens ? *lens : none, x0, y0, x1 - x0, y1 - y0);
+    } else {
+        sub.resize(x1 - x0, y1 - y0);
+        for (int y = y0; y < y1; ++y) std::copy(lin.px(x0, y), lin.px(x1, y), sub.px(0, y - y0));
+    }
+    p.enabled.lens = false;
     p.enabled.crop = false;
     DevelopOptions o;
     o.scale = 1.0f;
