@@ -22,4 +22,9 @@ struct LoadedRaw {
 // bytes：ファイルの中身（Windows の日本語パスでも読めるよう、メモリ経由で渡す）
 LoadedRaw loadRaw(const std::vector<unsigned char>& bytes, bool half);
 
+// 埋め込みサムネイル（JPEG のバイト列）。flip は LibRaw の向き（0, 3, 5, 6）。無ければ空
+std::vector<unsigned char> extractThumbJpeg(const std::vector<unsigned char>& bytes, int& flip);
+
+bool isRawExtension(const std::string& extLower);
+
 }  // namespace rd

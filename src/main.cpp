@@ -1,26 +1,33 @@
 #include <QApplication>
-#include <QPalette>
-#include <QStyleFactory>
+#include <QFileInfo>
+#include <QSettings>
+#include <QTimer>
 
 #include "ui/MainWindow.h"
+#include "ui/Theme.h"
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     QApplication::setOrganizationName("RawDeveloper");
     QApplication::setApplicationName("RawDeveloper");
-    app.setStyle(QStyleFactory::create("Fusion"));
-    QPalette pal;
-    pal.setColor(QPalette::Window, QColor(0x1e, 0x1e, 0x1e));
-    pal.setColor(QPalette::WindowText, QColor(0xd6, 0xd6, 0xd6));
-    pal.setColor(QPalette::Base, QColor(0x2e, 0x2e, 0x2e));
-    pal.setColor(QPalette::Text, QColor(0xd6, 0xd6, 0xd6));
-    pal.setColor(QPalette::Button, QColor(0x2e, 0x2e, 0x2e));
-    pal.setColor(QPalette::ButtonText, QColor(0xd6, 0xd6, 0xd6));
-    pal.setColor(QPalette::Highlight, QColor(0xd2, 0x8b, 0x2c));
-    app.setPalette(pal);
-
+    rd::theme::apply(app);
     rd::MainWindow w;
     w.show();
-    if (argc > 1) w.openFile(QString::fromLocal8Bit(argv[1]));
+    const QString arg = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
+    if (!arg.isEmpty() && QFileInfo(arg).isDir())
+        w.openFolder(arg);
+    else if (!arg.isEmpty())
+        w.openFolder(QFileInfo(arg).absolutePath(), arg);
+    else if (const QString last = QSettings().value("library/folder").toString(); !last.isEmpty() && QFileInfo(last).isDir())
+        w.openFolder(last);
+    if (const QByteArray t = qgetenv("RD_TEST_SCRIPT"); !t.isEmpty()) w.runScriptedTest(QString::fromLocal8Bit(t));
+    // 自動テスト用：RD_SCREENSHOT=保存先.png  RD_SCREENSHOT_DELAY=ミリ秒
+    if (const QByteArray shot = qgetenv("RD_SCREENSHOT"); !shot.isEmpty()) {
+        const int delay = qEnvironmentVariableIntValue("RD_SCREENSHOT_DELAY");
+        QTimer::singleShot(delay > 0 ? delay : 5000, &w, [&w, shot] {
+            w.grab().save(QString::fromLocal8Bit(shot));
+            QApplication::quit();
+        });
+    }
     return app.exec();
 }

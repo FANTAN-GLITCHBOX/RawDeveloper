@@ -58,6 +58,16 @@ jobs:
           python tests\make_test_dng.py test.dng
           dist\rd_selftest.exe test.dng
 
+      - name: UI smoke test (offscreen)
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:RD_TEST_SCRIPT = "$PWD\uitest"
+          $p = Start-Process -FilePath dist\RawDeveloper.exe -ArgumentList "$PWD\test.dng" -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "UI test timed out" }
+          foreach ($i in 1..4) { if (-not (Test-Path "uitest_$i.png")) { throw "screenshot $i missing" } }
+          Get-ChildItem uitest_*.png | Select-Object Name, Length
+
       - name: Upload
         uses: actions/upload-artifact@v4
         with:

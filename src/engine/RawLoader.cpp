@@ -111,6 +111,29 @@ LoadedRaw loadRaw(const std::vector<unsigned char>& bytes, bool half) {
     return res;
 }
 
+std::vector<unsigned char> extractThumbJpeg(const std::vector<unsigned char>& bytes, int& flip) {
+    flip = 0;
+    auto raw = std::make_unique<LibRaw>();
+    if (raw->open_buffer(const_cast<unsigned char*>(bytes.data()), bytes.size()) != LIBRAW_SUCCESS) return {};
+    flip = raw->imgdata.sizes.flip;
+    if (raw->unpack_thumb() != LIBRAW_SUCCESS) return {};
+    int e = 0;
+    libraw_processed_image_t* t = raw->dcraw_make_mem_thumb(&e);
+    if (!t) return {};
+    std::vector<unsigned char> out;
+    if (t->type == LIBRAW_IMAGE_JPEG) out.assign(t->data, t->data + t->data_size);
+    LibRaw::dcraw_clear_mem(t);
+    return out;
+}
+
+bool isRawExtension(const std::string& e) {
+    static const char* exts[] = {"cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef",
+                                 "dng", "srw", "x3f", "3fr", "iiq", "erf", "mos", "mrw", "kdc", "dcr", "rwl"};
+    for (const char* x : exts)
+        if (e == x) return true;
+    return false;
+}
+
 ImageF downscale(const ImageF& src, int maxEdge) {
     const int longEdge = std::max(src.width, src.height);
     if (longEdge <= maxEdge) return src;

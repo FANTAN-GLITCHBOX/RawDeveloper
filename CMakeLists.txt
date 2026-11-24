@@ -43,8 +43,13 @@ endif()
 # アプリ本体
 qt_add_executable(RawDeveloper WIN32
   src/main.cpp
-  src/ui/MainWindow.h src/ui/MainWindow.cpp
+  src/ui/Theme.h src/ui/Theme.cpp
+  src/ui/Widgets.h src/ui/Widgets.cpp
+  src/ui/CurveEditor.h src/ui/CurveEditor.cpp
+  src/ui/Scopes.h src/ui/Scopes.cpp
   src/ui/Viewer.h src/ui/Viewer.cpp
+  src/ui/DevelopPanel.h src/ui/DevelopPanel.cpp
+  src/ui/MainWindow.h src/ui/MainWindow.cpp
 )
 target_link_libraries(RawDeveloper PRIVATE rdengine Qt6::Widgets Qt6::Concurrent)
 
