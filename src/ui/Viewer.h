@@ -54,7 +54,10 @@ public:
     void setCropMode(bool on, const CropRect& r = {});
     bool cropMode() const { return cropMode_; }
     CropRect cropRect() const { return crop_; }
-    void setCropAspect(double a) { aspect_ = a; }  // 0 = 自由（幅/高さ）
+    void setCropAspect(double a) { aspect_ = a; }
+    // 角度をキーで調整している間の表示（細かいグリッドと角度の数字）。text が空なら消す
+    void setAngleHint(const QString& text) { angleHint_ = text; update(); }
+    QString angleHint() const { return angleHint_; }  // 0 = 自由（幅/高さ）
 
 signals:
     void probe(std::optional<std::array<int, 3>> rgb);
@@ -93,6 +96,7 @@ private:
     QRect roiRect_, roiBeforeRect_;
     QSize full_{1, 1};
     bool hires_ = false;
+    QString angleHint_;
     QString message_, beforeLabel_ = QStringLiteral("補正前");
     double zoom_ = 1;
     bool fit_ = true;

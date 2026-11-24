@@ -382,6 +382,23 @@ void Viewer::drawCrop(QPainter& p, const QRectF& r) {
     p.fillRect(QRectF(r.left(), c.bottom(), r.width(), r.bottom() - c.bottom()), shade);
     p.fillRect(QRectF(r.left(), c.top(), c.left() - r.left(), c.height()), shade);
     p.fillRect(QRectF(c.right(), c.top(), r.right() - c.right(), c.height()), shade);
+    if (!angleHint_.isEmpty()) {
+        // 水平・垂直を合わせやすい細かいグリッド（正方形のマス）
+        p.setPen(QPen(QColor(255, 255, 255, 70), 1));
+        const double cell = std::max(16.0, std::min(c.width(), c.height()) / 12);
+        for (double x = c.left() + cell; x < c.right() - 1; x += cell) p.drawLine(QPointF(x, c.top()), QPointF(x, c.bottom()));
+        for (double y = c.top() + cell; y < c.bottom() - 1; y += cell) p.drawLine(QPointF(c.left(), y), QPointF(c.right(), y));
+        QFont f = p.font();
+        f.setPointSizeF(f.pointSizeF() * 1.6);
+        f.setBold(true);
+        p.save();
+        p.setFont(f);
+        const QRectF tr(c.right() - 200, c.bottom() - 44, 192, 36);
+        p.fillRect(tr, QColor(0, 0, 0, 160));
+        p.setPen(Qt::white);
+        p.drawText(tr, Qt::AlignCenter, angleHint_);
+        p.restore();
+    }
     p.setPen(QPen(QColor(255, 255, 255, 120), 1));
     for (int i = 1; i <= 2; ++i) {
         const double x = c.left() + c.width() * i / 3, y = c.top() + c.height() * i / 3;
@@ -401,6 +418,7 @@ void Viewer::drawCrop(QPainter& p, const QRectF& r) {
 
 void Viewer::setCropMode(bool on, const CropRect& r) {
     cropMode_ = on;
+    if (!on) angleHint_.clear();
     if (on) crop_ = r;
     update();
 }

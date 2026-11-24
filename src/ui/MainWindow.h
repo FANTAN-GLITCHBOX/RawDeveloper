@@ -14,6 +14,7 @@
 #include "engine/Params.h"
 #include "engine/RawLoader.h"
 #include "ui/Library.h"
+#include "ui/Viewer.h"
 
 class QLabel;
 class QListWidget;
@@ -102,6 +103,9 @@ private:
     void autoAdjust(float strength, bool wbOnly);
     void wbPick(int x, int y);
     void cropTool(bool on);
+    void nudgeAngle(double delta);
+    void commitAngle();
+    Params fitCropToAngle(Params p);
     void step(int d);
     // ライブラリ
     void setMode(bool develop);
@@ -172,6 +176,8 @@ private:
     std::optional<Params> compareTarget_;
     bool beforeCrop_ = true;   // 補正前にも切り抜き・角度を当てる
     QTimer saveTimer_;
+    std::optional<CropRect> angleBase_;  // 角度を変え始めたときの枠（角度を戻すと枠も元に戻せるように）
+    QTimer angleTimer_;   // キーで角度を変えたあと、離して 0.5 秒で履歴に 1 件だけ記録
     QString folder_;
     std::optional<Params> clipboard_;
     std::optional<Params> cropBackup_;

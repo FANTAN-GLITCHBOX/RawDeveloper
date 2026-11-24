@@ -124,6 +124,35 @@ QImage toQImage(const ImageF& g) {
 
 QString sidecarPath(const QString& path) { return path + ".rdev"; }
 
+// 回転した画像の中に枠（正規化座標）の四隅が収まっているか
+bool cropInside(const CropRect& r, double angleDeg, double W, double H) {
+    const double a = angleDeg * 3.14159265358979 / 180.0, ca = std::cos(a), sa = std::sin(a);
+    const double cx = W / 2, cy = H / 2;
+    for (double fx : {r.x, r.x + r.w})
+        for (double fy : {r.y, r.y + r.h}) {
+            const double dx = fx * W - cx, dy = fy * H - cy;
+            const double sx = ca * dx + sa * dy + cx, sy = -sa * dx + ca * dy + cy;
+            if (sx < -0.5 || sy < -0.5 || sx > W + 0.5 || sy > H + 0.5) return false;
+        }
+    return true;
+}
+
+// 黒い余白が入らないよう枠を縮める。縦横比は保ち、縮めるほど画像の中心へ寄せる
+CropRect fitCrop(const CropRect& base, double angleDeg, double W, double H) {
+    if (cropInside(base, angleDeg, W, H)) return base;
+    const double bcx = base.x + base.w / 2, bcy = base.y + base.h / 2;
+    auto at = [&](double s) {
+        const double cx = 0.5 + (bcx - 0.5) * s, cy = 0.5 + (bcy - 0.5) * s;
+        return CropRect{cx - base.w * s / 2, cy - base.h * s / 2, base.w * s, base.h * s};
+    };
+    double lo = 0, hi = 1;
+    for (int i = 0; i < 40; ++i) {
+        const double m = (lo + hi) / 2;
+        (cropInside(at(m), angleDeg, W, H) ? lo : hi) = m;
+    }
+    return at(lo);
+}
+
 QString geomKey(const Params& p) {
     return QString("%1,%2,%3,%4,%5,%6|%7,%8,%9,%10,%11,%12,%13")
         .arg(p.cropX).arg(p.cropY).arg(p.cropW).arg(p.cropH).arg(p.cropAngle).arg(p.enabled.crop)
@@ -303,7 +332,14 @@ void MainWindow::buildUi() {
     });
 
     connect(panel_, &DevelopPanel::paramsChanged, this,
-            [this](const Params& p, bool final, const QString& desc) { applyParams(p, final, desc); });
+            [this](Params p, bool final, const QString& desc) {
+                if (s_ && viewer_->cropMode()) {
+                    // 枠は画面上の操作が正（パネル側の値は古いことがある）
+                    p.cropX = s_->params.cropX; p.cropY = s_->params.cropY; p.cropW = s_->params.cropW; p.cropH = s_->params.cropH;
+                    if (p.cropAngle != s_->params.cropAngle) p = fitCropToAngle(p);
+                }
+                applyParams(p, final, desc);
+            });
     connect(panel_, &DevelopPanel::autoRequested, this, &MainWindow::autoAdjust);
     connect(panel_, &DevelopPanel::hoverKey, this, [this](const QString& k) {
         static const QStringList zones{"blacks", "shadows", "exposure", "highlights", "whites"};
@@ -322,6 +358,7 @@ void MainWindow::buildUi() {
     connect(viewer_, &Viewer::viewChanged, this, [this] { viewTimer_.start(30); });
     connect(viewer_, &Viewer::cropChanged, this, [this](const CropRect& r, bool final) {
         if (!s_) return;
+        angleBase_.reset();
         Params p = s_->params;
         p.cropX = float(r.x);
         p.cropY = float(r.y);
@@ -498,8 +535,22 @@ void MainWindow::buildActions() {
     add(view, QStringLiteral("全体表示"), QKeySequence(), [this] { viewer_->zoomFit(); }, true);
     add(view, QStringLiteral("100%"), QKeySequence(), [this] { viewer_->zoom100(); }, true);
     add(view, QStringLiteral("全体⇔等倍"), QKeySequence("Z"), [this] { viewer_->toggleZoom(); });
-    add(view, QStringLiteral("前の写真"), QKeySequence("Left"), [this] { step(-1); });
-    add(view, QStringLiteral("次の写真"), QKeySequence("Right"), [this] { step(1); });
+    // 切り抜き中の ← → は角度（0.1°、Shift で 1°、Ctrl で 0.01°）
+    add(view, QStringLiteral("前の写真（切り抜き中は角度 −）"), QKeySequence("Left"), [this] {
+        viewer_->cropMode() ? nudgeAngle(-0.1) : step(-1);
+    });
+    add(view, QStringLiteral("次の写真（切り抜き中は角度 ＋）"), QKeySequence("Right"), [this] {
+        viewer_->cropMode() ? nudgeAngle(0.1) : step(1);
+    });
+    for (auto [key, d] : std::initializer_list<std::pair<const char*, double>>{
+             {"Shift+Left", -1.0}, {"Shift+Right", 1.0}, {"Ctrl+Left", -0.01}, {"Ctrl+Right", 0.01}}) {
+        auto* sc = new QShortcut(QKeySequence(key), this);
+        connect(sc, &QShortcut::activated, this, [this, d] {
+            if (viewer_->cropMode()) nudgeAngle(d);
+        });
+    }
+    angleTimer_.setSingleShot(true);
+    connect(&angleTimer_, &QTimer::timeout, this, &MainWindow::commitAngle);
     add(view, QStringLiteral("WB スポイト"), QKeySequence("W"), [this] { panel_->wbPickButton()->toggle(); });
     add(view, QStringLiteral("切り抜きツール"), QKeySequence("R"), [this] { panel_->cropButton()->toggle(); });
     add(view, QStringLiteral("全画面で選別"), QKeySequence("F"), [this] { toggleFullscreen(); });
@@ -507,12 +558,17 @@ void MainWindow::buildActions() {
         auto* enter = new QShortcut(QKeySequence(key), this);
         connect(enter, &QShortcut::activated, this, [this] {
             if (!developMode_) setMode(true);
-            else if (viewer_->cropMode()) emit viewer_->cropChanged(viewer_->cropRect(), true);
+            else if (viewer_->cropMode()) {
+                commitAngle();
+                emit viewer_->cropChanged(viewer_->cropRect(), true);
+            }
         });
     }
     auto* esc = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     connect(esc, &QShortcut::activated, this, [this] {
         if (viewer_->cropMode() && s_) {
+            angleTimer_.stop();
+            viewer_->setAngleHint({});
             panel_->cropButton()->setChecked(false);
             if (cropBackup_) applyParams(*cropBackup_, true, QStringLiteral("切り抜きを取消"), true);
         } else if (isFullScreen()) {
@@ -1113,17 +1169,52 @@ void MainWindow::wbPick(int x, int y) {
 
 void MainWindow::cropTool(bool on) {
     if (!s_) return;
+    angleBase_.reset();
     if (on) {
         cropBackup_ = s_->params;
         viewer_->setCropMode(true, CropRect{s_->params.cropX, s_->params.cropY, s_->params.cropW, s_->params.cropH});
         emit panel_->aspectChanged();
         viewer_->setFocus();
     } else {
+        commitAngle();
         viewer_->setCropMode(false);
         cropBackup_.reset();
     }
     ++version_;
     requestRender();
+}
+
+void MainWindow::nudgeAngle(double delta) {
+    if (!s_ || !s_->src) return;
+    Params p = s_->params;
+    const double a = std::clamp(std::round((p.cropAngle + delta) * 100.0) / 100.0, -45.0, 45.0);
+    if (a == p.cropAngle) return;
+    p.cropAngle = float(a);
+    p.enabled.crop = true;
+    viewer_->setAngleHint(QStringLiteral("角度 %1%2°").arg(a > 0 ? "+" : "").arg(a, 0, 'f', std::abs(delta) < 0.05 ? 2 : 1));
+    applyParams(fitCropToAngle(p), false, {}, true);
+    angleTimer_.start(500);
+}
+
+Params MainWindow::fitCropToAngle(Params p) {
+    if (!s_ || !s_->src || !viewer_->cropMode()) return p;
+    if (!angleBase_) angleBase_ = viewer_->cropRect();
+    const CropRect r = fitCrop(*angleBase_, p.cropAngle, s_->src->meta.fullWidth, s_->src->meta.fullHeight);
+    p.cropX = float(r.x);
+    p.cropY = float(r.y);
+    p.cropW = float(r.w);
+    p.cropH = float(r.h);
+    viewer_->setCropMode(true, r);
+    return p;
+}
+
+void MainWindow::commitAngle() {
+    if (!angleTimer_.isActive() && !dragging_) return;
+    angleTimer_.stop();
+    viewer_->setAngleHint({});
+    if (!s_) return;
+    const double a = s_->params.cropAngle;
+    applyParams(s_->params, true, QStringLiteral("角度 %1%2°").arg(a > 0 ? "+" : "").arg(a, 0, 'f', 2), false);
 }
 
 // ================================================================ rating
@@ -1520,6 +1611,18 @@ void MainWindow::runScriptedTest(const QString& prefix) {
         {2500, [=, this] {
              shot(6);
              std::printf("  before roi: %d\n", int(viewer_->hasBeforeRoi()));
+             viewer_->setCompare(CompareMode::Off);
+             viewer_->zoomFit();
+             panel_->cropButton()->setChecked(true);
+             for (int i = 0; i < 3; ++i) nudgeAngle(1.0);
+             nudgeAngle(-0.1);
+             nudgeAngle(0.01);
+         }},
+        {300, [=, this] { shot(9); }},
+        {1500, [=, this] {
+             std::printf("angle: %.2f history '%s' crop %d\n", s_->params.cropAngle,
+                         s_->history[s_->historyPos].first.toUtf8().constData(), int(viewer_->cropMode()));
+             panel_->cropButton()->setChecked(false);
              flushSave();
              // 評価
              rate([](PhotoMark& k) { k.rating = 4; }, "test");
