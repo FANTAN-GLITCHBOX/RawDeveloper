@@ -1,0 +1,450 @@
+#include "engine/Pipeline.h"
+
+#include <algorithm>
+#include <cmath>
+
+#include "engine/Color.h"
+#include "engine/Parallel.h"
+
+namespace rd {
+
+namespace {
+constexpr float kPi = 3.14159265358979f;
+
+inline float sq(float x) { return x * x; }
+inline float bump(float x, float c, float w) { return std::exp(-sq((x - c) / w)); }
+}  // namespace
+
+// ---------------------------------------------------------------- curves
+
+std::vector<float> monotoneSpline(const CurvePoints& ptsIn, const std::vector<float>& xs) {
+    CurvePoints pts = ptsIn;
+    std::sort(pts.begin(), pts.end());
+    const size_t n = pts.size();
+    std::vector<float> out(xs.size());
+    if (n == 1) {
+        std::fill(out.begin(), out.end(), pts[0].second);
+        return out;
+    }
+    std::vector<double> px(n), py(n), d(n - 1), m(n);
+    for (size_t i = 0; i < n; ++i) {
+        px[i] = pts[i].first;
+        py[i] = pts[i].second;
+    }
+    for (size_t i = 0; i + 1 < n; ++i) d[i] = (py[i + 1] - py[i]) / std::max(px[i + 1] - px[i], 1e-9);
+    m[0] = d[0];
+    m[n - 1] = d[n - 2];
+    for (size_t i = 1; i + 1 < n; ++i) m[i] = (d[i - 1] * d[i] <= 0) ? 0.0 : (d[i - 1] + d[i]) / 2;
+    for (size_t i = 0; i + 1 < n; ++i) {
+        if (d[i] == 0) {
+            m[i] = m[i + 1] = 0;
+        } else {
+            const double a = m[i] / d[i], b = m[i + 1] / d[i];
+            const double s = a * a + b * b;
+            if (s > 9) {
+                const double t = 3 / std::sqrt(s);
+                m[i] = t * a * d[i];
+                m[i + 1] = t * b * d[i];
+            }
+        }
+    }
+    for (size_t k = 0; k < xs.size(); ++k) {
+        const double x = xs[k];
+        if (x < px[0]) {
+            out[k] = static_cast<float>(py[0]);
+            continue;
+        }
+        if (x > px[n - 1]) {
+            out[k] = static_cast<float>(py[n - 1]);
+            continue;
+        }
+        size_t i = std::upper_bound(px.begin(), px.end(), x) - px.begin();
+        i = std::clamp<size_t>(i == 0 ? 0 : i - 1, 0, n - 2);
+        const double h = std::max(px[i + 1] - px[i], 1e-9);
+        const double t = (x - px[i]) / h, t2 = t * t, t3 = t2 * t;
+        const double y = (2 * t3 - 3 * t2 + 1) * py[i] + (t3 - 2 * t2 + t) * h * m[i] +
+                         (-2 * t3 + 3 * t2) * py[i + 1] + (t3 - t2) * h * m[i + 1];
+        out[k] = static_cast<float>(y);
+    }
+    return out;
+}
+
+ToneLut toneLut(const Params& pIn) {
+    const bool basic = pIn.enabled.basic;
+    const float blacks = basic ? pIn.blacks : 0, shadows = basic ? pIn.shadows : 0;
+    const float highlights = basic ? pIn.highlights : 0, whites = basic ? pIn.whites : 0;
+    const float contrast = basic ? pIn.contrast : 0;
+    std::vector<float> y(kLutN);
+    for (int i = 0; i < kLutN; ++i) {
+        const float x = kLutMax * i / (kLutN - 1);
+        constexpr float knee = 0.80f;
+        float v = x < knee ? x : knee + (1 - knee) * (1 - std::exp(-(x - knee) / (1 - knee)));
+        v = v + 0.06f * std::sin(2 * kPi * std::clamp(v, 0.0f, 1.0f)) / (2 * kPi) * 2;
+        v = v + blacks / 100.0f * 0.08f * bump(v, 0.04f, 0.10f);
+        v = v + shadows / 100.0f * 0.13f * bump(v, 0.25f, 0.17f);
+        v = v + highlights / 100.0f * 0.13f * bump(v, 0.74f, 0.17f);
+        v = v + whites / 100.0f * 0.08f * bump(v, 0.96f, 0.10f);
+        const float c = contrast / 100.0f;
+        if (c != 0 && v >= 0 && v <= 1) v = v + c * 0.45f * std::sin(2 * kPi * v) / (2 * kPi) * 2;
+        y[i] = std::clamp(v, 0.0f, 1.0f);
+    }
+    for (int i = 1; i < kLutN; ++i) y[i] = std::max(y[i], y[i - 1]);
+    const bool curves = pIn.enabled.curve;
+    if (curves && !isIdentityCurve(pIn.curve[0])) y = monotoneSpline(pIn.curve[0], y);
+    ToneLut lut;
+    lut.t[0] = y;
+    for (int c = 0; c < 3; ++c)
+        lut.t[c + 1] = (curves && !isIdentityCurve(pIn.curve[c + 1])) ? monotoneSpline(pIn.curve[c + 1], y) : y;
+    return lut;
+}
+
+std::array<float, 3> wbFor(const Params& p, const std::array<float, 3>& asShot) {
+    if (!p.enabled.basic || p.wbMode == "as_shot") return asShot;
+    return wbGains(p.temp, p.tint);
+}
+
+// ---------------------------------------------------------------- color
+
+namespace {
+
+std::array<float, 3> wheelRgb(const Wheel& w, float& master) {
+    const float u = w[0], v = w[1];
+    std::array<float, 3> vec{u * 0.866f, -u * 0.433f + v * 0.75f, -u * 0.433f - v * 0.75f};
+    const float l = vec[0] * kLuma[0] + vec[1] * kLuma[1] + vec[2] * kLuma[2];
+    for (float& x : vec) x -= l;
+    master = w[2];
+    return vec;
+}
+
+bool wheelsActive(const Params& p) {
+    for (const Wheel* w : {&p.lift, &p.gamma, &p.gain, &p.offset})
+        for (float x : *w)
+            if (std::abs(x) > 1e-6f) return true;
+    return false;
+}
+
+std::vector<float> bandTable(const std::array<float, kHslBands>& adj) {
+    std::vector<float> t(721);
+    for (int i = 0; i <= 720; ++i) {
+        const float deg = i / 2.0f;
+        int k = 0;
+        while (k < kHslBands - 1 && deg >= kHslCenters[k + 1]) ++k;
+        const float c0 = kHslCenters[k];
+        const float c1 = (k == kHslBands - 1) ? 360.0f : kHslCenters[k + 1];
+        const float v0 = adj[k], v1 = adj[(k + 1) % kHslBands];
+        const float f = (deg - c0) / (c1 - c0);
+        t[i] = v0 + (v1 - v0) * f;
+    }
+    return t;
+}
+
+bool anyNonZero(const std::array<float, kHslBands>& a) {
+    return std::any_of(a.begin(), a.end(), [](float v) { return v != 0; });
+}
+
+// 1 次元のガウスぼかし（OpenCV と同じく端は反射、半径は σ×4）
+void blur1d(const float* src, float* dst, int n, int stride, const std::vector<float>& k, int r) {
+    // 端から離れた部分は境界の判定なしで速く
+    for (int i = r; i < n - r; ++i) {
+        float acc = 0;
+        const float* s0 = src + static_cast<size_t>(i - r) * stride;
+        for (int j = 0; j <= 2 * r; ++j) acc += k[j] * s0[static_cast<size_t>(j) * stride];
+        dst[static_cast<size_t>(i) * stride] = acc;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (i == r && n - r > r) i = n - r;
+        float acc = 0;
+        for (int j = -r; j <= r; ++j) {
+            int idx = i + j;
+            if (idx < 0) idx = -idx;
+            if (idx >= n) idx = 2 * n - 2 - idx;
+            idx = std::clamp(idx, 0, n - 1);
+            acc += k[j + r] * src[static_cast<size_t>(idx) * stride];
+        }
+        dst[static_cast<size_t>(i) * stride] = acc;
+    }
+}
+
+}  // namespace
+
+void gaussianBlur(std::vector<float>& plane, int w, int h, float sigma) {
+    if (sigma <= 0.05f) return;
+    const int r = std::max(1, static_cast<int>(std::lround(sigma * 4)));
+    std::vector<float> k(2 * r + 1);
+    float s = 0;
+    for (int i = -r; i <= r; ++i) s += (k[i + r] = std::exp(-0.5f * sq(i / sigma)));
+    for (float& x : k) x /= s;
+    std::vector<float> tmp(plane.size());
+    parallelFor(h, [&](int a, int b) {
+        for (int y = a; y < b; ++y) blur1d(&plane[static_cast<size_t>(y) * w], &tmp[static_cast<size_t>(y) * w], w, 1, k, r);
+    });
+    parallelFor(w, [&](int a, int b) {
+        for (int x = a; x < b; ++x) blur1d(&tmp[x], &plane[x], h, w, k, r);
+    });
+}
+
+namespace {
+
+// 輝度のノイズ低減：ガイデッドフィルタ（エッジを保ってなめらかに）
+void guidedSmooth(std::vector<float>& Y, int w, int h, float radius, float eps) {
+    auto boxBlur = [&](std::vector<float>& p) { gaussianBlur(p, w, h, radius); };
+    std::vector<float> mean = Y, sqm(Y.size());
+    for (size_t i = 0; i < Y.size(); ++i) sqm[i] = Y[i] * Y[i];
+    boxBlur(mean);
+    boxBlur(sqm);
+    std::vector<float> a(Y.size()), b(Y.size());
+    for (size_t i = 0; i < Y.size(); ++i) {
+        const float var = std::max(sqm[i] - mean[i] * mean[i], 0.0f);
+        a[i] = var / (var + eps);
+        b[i] = mean[i] - a[i] * mean[i];
+    }
+    boxBlur(a);
+    boxBlur(b);
+    for (size_t i = 0; i < Y.size(); ++i) Y[i] = a[i] * Y[i] + b[i];
+}
+
+void applyDetail(ImageF& g, const Params& p, float scale) {
+    const int w = g.width, h = g.height;
+    const size_t n = static_cast<size_t>(w) * h;
+    if (p.nrColor > 0 || p.nrLuma > 0) {
+        std::vector<float> Y(n), Cr(n), Cb(n);
+        for (size_t i = 0; i < n; ++i) {
+            const float r = g.data[i * 3], gg = g.data[i * 3 + 1], b = g.data[i * 3 + 2];
+            Y[i] = 0.299f * r + 0.587f * gg + 0.114f * b;
+            Cr[i] = (r - Y[i]) * 0.713f + 0.5f;
+            Cb[i] = (b - Y[i]) * 0.564f + 0.5f;
+        }
+        if (p.nrColor > 0) {
+            const float sig = std::max(0.3f, p.nrColor / 100.0f * 6.0f * scale);
+            gaussianBlur(Cr, w, h, sig);
+            gaussianBlur(Cb, w, h, sig);
+        }
+        if (p.nrLuma > 0) {
+            const float e = p.nrLuma / 100.0f * 0.08f;
+            guidedSmooth(Y, w, h, std::max(0.8f, 2.5f * scale), e * e);
+        }
+        parallelFor(h, [&](int a, int bEnd) {
+            for (size_t i = static_cast<size_t>(a) * w; i < static_cast<size_t>(bEnd) * w; ++i) {
+                const float y = Y[i], cr = Cr[i] - 0.5f, cb = Cb[i] - 0.5f;
+                g.data[i * 3] = y + 1.403f * cr;
+                g.data[i * 3 + 1] = y - 0.714f * cr - 0.344f * cb;
+                g.data[i * 3 + 2] = y + 1.773f * cb;
+            }
+        });
+    }
+    const float rad = p.sharpenRadius * scale;
+    if (p.sharpenAmount > 0 && rad >= 0.3f) {
+        std::vector<float> Y(n);
+        for (size_t i = 0; i < n; ++i)
+            Y[i] = g.data[i * 3] * kLuma[0] + g.data[i * 3 + 1] * kLuma[1] + g.data[i * 3 + 2] * kLuma[2];
+        std::vector<float> blur = Y;
+        gaussianBlur(blur, w, h, rad);
+        const float k = p.sharpenAmount / 100.0f * 1.2f;
+        const float maskAmt = p.sharpenMasking / 100.0f;
+        parallelFor(h, [&](int a, int b) {
+            for (int y = a; y < b; ++y)
+                for (int x = 0; x < w; ++x) {
+                    const size_t i = static_cast<size_t>(y) * w + x;
+                    float detail = Y[i] - blur[i];
+                    if (maskAmt > 0) {
+                        auto at = [&](int xx, int yy) {
+                            xx = std::clamp(xx, 0, w - 1);
+                            yy = std::clamp(yy, 0, h - 1);
+                            return blur[static_cast<size_t>(yy) * w + xx];
+                        };
+                        const float gx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1)) -
+                                         (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1));
+                        const float gy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1)) -
+                                         (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1));
+                        const float mag = std::sqrt(gx * gx + gy * gy);
+                        const float thr = maskAmt * 0.25f;
+                        detail *= std::clamp((mag - thr * 0.5f) / std::max(thr, 1e-4f), 0.0f, 1.0f);
+                    }
+                    const float add = k * detail;
+                    g.data[i * 3] += add;
+                    g.data[i * 3 + 1] += add;
+                    g.data[i * 3 + 2] += add;
+                }
+        });
+    }
+}
+
+ImageF rotate(const ImageF& src, float angleDeg) {
+    if (std::abs(angleDeg) < 1e-3f) return src;
+    const int w = src.width, h = src.height;
+    ImageF dst;
+    dst.resize(w, h);
+    const double a = angleDeg * kPi / 180.0;
+    const double cx = (w - 1) / 2.0, cy = (h - 1) / 2.0;
+    const double ca = std::cos(a), sa = std::sin(a);
+    parallelFor(h, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < w; ++x) {
+                // 出力 → 入力（逆回転）
+                const double dx = x - cx, dy = y - cy;
+                const double sx = ca * dx + sa * dy + cx;
+                const double sy = -sa * dx + ca * dy + cy;
+                const int ix = static_cast<int>(std::floor(sx)), iy = static_cast<int>(std::floor(sy));
+                const float fx = static_cast<float>(sx - ix), fy = static_cast<float>(sy - iy);
+                float* d = dst.px(x, y);
+                for (int c = 0; c < 3; ++c) {
+                    auto at = [&](int xx, int yy) -> float {
+                        if (xx < 0 || yy < 0 || xx >= w || yy >= h) return 0.0f;
+                        return src.px(xx, yy)[c];
+                    };
+                    const float v = (at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) +
+                                    (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy;
+                    d[c] = v;
+                }
+            }
+    });
+    return dst;
+}
+
+ImageF cropImage(const ImageF& src, const Params& p) {
+    const int w = src.width, h = src.height;
+    int x0 = static_cast<int>(std::lround(p.cropX * w)), y0 = static_cast<int>(std::lround(p.cropY * h));
+    int x1 = static_cast<int>(std::lround((p.cropX + p.cropW) * w));
+    int y1 = static_cast<int>(std::lround((p.cropY + p.cropH) * h));
+    x0 = std::max(0, x0);
+    y0 = std::max(0, y0);
+    x1 = std::min(w, std::max(x0 + 1, x1));
+    y1 = std::min(h, std::max(y0 + 1, y1));
+    ImageF dst;
+    dst.resize(x1 - x0, y1 - y0);
+    for (int y = y0; y < y1; ++y)
+        std::copy(src.px(x0, y), src.px(x0, y) + (x1 - x0) * 3, dst.px(0, y - y0));
+    return dst;
+}
+
+}  // namespace
+
+std::pair<double, double> rotatedRectMaxArea(double w, double h, double angle) {
+    if (w <= 0 || h <= 0) return {0, 0};
+    const bool widthLonger = w >= h;
+    const double sideLong = widthLonger ? w : h, sideShort = widthLonger ? h : w;
+    const double sa = std::abs(std::sin(angle)), ca = std::abs(std::cos(angle));
+    if (sideShort <= 2.0 * sa * ca * sideLong || std::abs(sa - ca) < 1e-10) {
+        const double x = 0.5 * sideShort;
+        return widthLonger ? std::make_pair(x / sa, x / ca) : std::make_pair(x / ca, x / sa);
+    }
+    const double cos2a = ca * ca - sa * sa;
+    return {(w * ca - h * sa) / cos2a, (h * ca - w * sa) / cos2a};
+}
+
+ImageF develop(const ImageF& lin, const Params& p, const std::array<float, 3>& asShot, const DevelopOptions& o) {
+    const int w = lin.width, h = lin.height;
+    ImageF g;
+    g.resize(w, h);
+    const auto wb = wbFor(p, asShot);
+    const float ev = std::pow(2.0f, p.enabled.basic ? p.exposure : 0.0f);
+    const float gains[3] = {wb[0] * ev, wb[1] * ev, wb[2] * ev};
+    const ToneLut lut = toneLut(p);
+
+    // ホイールの係数
+    constexpr float kIdx = (kLutN - 1) / kLutMax;
+    const bool wheels = p.enabled.wheels && wheelsActive(p);
+    float lm, gm, gnm, om;
+    const auto lv = wheelRgb(p.lift, lm), gv = wheelRgb(p.gamma, gm), gnv = wheelRgb(p.gain, gnm),
+               ov = wheelRgb(p.offset, om);
+    float L[3], G[3], E[3], O[3];
+    for (int c = 0; c < 3; ++c) {
+        L[c] = (lv[c] + lm) * 0.25f;
+        G[c] = 1.0f + (gnv[c] + gnm) * 0.5f;
+        E[c] = std::pow(2.0f, -(gv[c] + gm) * 1.2f);
+        O[c] = (ov[c] + om) * 0.2f;
+    }
+    const float sat = p.enabled.basic ? p.saturation : 0, vib = p.enabled.basic ? p.vibrance : 0;
+    const bool hsl = p.enabled.hsl && (anyNonZero(p.hslHue) || anyNonZero(p.hslSat) || anyNonZero(p.hslLum));
+    const auto tHue = bandTable(p.hslHue), tSat = bandTable(p.hslSat), tLum = bandTable(p.hslLum);
+    const bool hasHue = anyNonZero(p.hslHue), hasSat = anyNonZero(p.hslSat), hasLum = anyNonZero(p.hslLum);
+    // 肌色の重み（色相 0..360）
+    static const std::vector<float> skinTab = [] {
+        std::vector<float> t(361);
+        for (int i = 0; i <= 360; ++i) t[i] = std::exp(-sq((i - 28.0f) / 18.0f));
+        return t;
+    }();
+
+    // リニア値 → (ガンマ → トーン LUT → カラーホイール) を 1 枚の表にまとめる。
+    // 暗部の精度を保つため、表は √x で引く。
+    constexpr int kTabN = 16384;
+    const float sMax = std::sqrt(std::pow(kLutMax, kGamma));
+    const float sScale = (kTabN - 1) / sMax;
+    std::array<std::vector<float>, 3> tab;
+    for (int c = 0; c < 3; ++c) {
+        tab[c].resize(kTabN);
+        for (int k = 0; k < kTabN; ++k) {
+            const float sv = k / sScale;
+            const float e = std::pow(sv * sv, 1.0f / kGamma);
+            const int idx = std::clamp(static_cast<int>(e * kIdx), 0, kLutN - 1);
+            float x = lut.t[c + 1][idx];
+            if (wheels) {
+                x = std::max(x, 0.0f);
+                x = x * G[c] + L[c] * (1.0f - std::clamp(x, 0.0f, 1.0f));
+                x = std::pow(std::max(x, 0.0f), E[c]) + O[c];
+            }
+            tab[c][k] = x;
+        }
+    }
+
+    parallelFor(h, [&](int y0, int y1) {
+        for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
+            float v[3];
+            for (int c = 0; c < 3; ++c) {
+                const float x = std::max(lin.data[i * 3 + c] * gains[c], 0.0f);
+                const int k = std::min(static_cast<int>(std::sqrt(x) * sScale + 0.5f), kTabN - 1);
+                v[c] = tab[c][k];
+            }
+            if (sat != 0 || vib != 0) {
+                const float Y = v[0] * kLuma[0] + v[1] * kLuma[1] + v[2] * kLuma[2];
+                float f = 1.0f + sat / 100.0f;
+                if (vib != 0) {
+                    float hh, ss, vv;
+                    rgbToHsv(std::clamp(v[0], 0.f, 1.f), std::clamp(v[1], 0.f, 1.f), std::clamp(v[2], 0.f, 1.f), hh, ss, vv);
+                    const float skin = skinTab[static_cast<int>(hh)] * std::min(ss * 3, 1.0f);
+                    float vf = vib / 100.0f * (1 - ss) * (1 - 0.6f * skin) * (vib > 0 ? 1.2f : 1.0f);
+                    f += std::max(vf, -1.0f);
+                }
+                for (float& c : v) c = Y + (c - Y) * f;
+            }
+            if (hsl) {
+                float hh, ss, vv;
+                rgbToHsv(std::clamp(v[0], 0.f, 1.f), std::clamp(v[1], 0.f, 1.f), std::clamp(v[2], 0.f, 1.f), hh, ss, vv);
+                const int bi = std::clamp(static_cast<int>(hh * 2), 0, 720);
+                const float sw = std::min(ss * 2.0f, 1.0f);
+                if (hasHue) hh = std::fmod(hh + tHue[bi] * 0.3f * sw + 360.0f, 360.0f);
+                if (hasSat) ss = std::clamp(ss * (1 + tSat[bi] / 100.0f), 0.0f, 1.0f);
+                if (hasLum) vv = std::clamp(vv * (1 + tLum[bi] * 0.006f * sw), 0.0f, 1.0f);
+                hsvToRgb(hh, ss, vv, v[0], v[1], v[2]);
+            }
+            for (int c = 0; c < 3; ++c) g.data[i * 3 + c] = std::clamp(v[c], 0.0f, 1.0f);
+        }
+    });
+
+    if (o.detail && p.enabled.detail) {
+        applyDetail(g, p, o.scale);
+        for (float& x : g.data) x = std::clamp(x, 0.0f, 1.0f);
+    }
+    if (p.enabled.crop) {
+        g = rotate(g, p.cropAngle);
+        if (o.doCrop && (p.cropW < 0.9999f || p.cropH < 0.9999f || p.cropX > 1e-4f || p.cropY > 1e-4f))
+            g = cropImage(g, p);
+    }
+    return g;
+}
+
+std::vector<std::uint8_t> toRgb8(const ImageF& g) {
+    std::vector<std::uint8_t> out(g.data.size());
+    for (size_t i = 0; i < out.size(); ++i)
+        out[i] = static_cast<std::uint8_t>(std::clamp(g.data[i], 0.0f, 1.0f) * 255.0f + 0.5f);
+    return out;
+}
+
+std::vector<std::uint16_t> toRgb16(const ImageF& g) {
+    std::vector<std::uint16_t> out(g.data.size());
+    for (size_t i = 0; i < out.size(); ++i)
+        out[i] = static_cast<std::uint16_t>(std::clamp(g.data[i], 0.0f, 1.0f) * 65535.0f + 0.5f);
+    return out;
+}
+
+}  // namespace rd

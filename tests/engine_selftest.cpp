@@ -5,7 +5,8 @@
 #include <fstream>
 #include <iterator>
 
-#include "engine/Develop.h"
+#include "engine/Auto.h"
+#include "engine/Pipeline.h"
 #include "engine/RawLoader.h"
 
 int main(int argc, char** argv) {
@@ -25,11 +26,23 @@ int main(int argc, char** argv) {
             return 1;
         }
         auto prev = rd::downscale(r.linear, 1600);
-        rd::Params p;
-        p.wbGains = r.asShotGains;
+        rd::Params p = rd::autoParams(prev, r.asShotGains, 100, rd::Params::defaults());
+        p.hslSat[3] = 20;
+        p.lift = {0.1f, 0.0f, 0.0f};
+        p.curve[0] = {{0, 0}, {0.5f, 0.55f}, {1, 1}};
         auto t2 = clk::now();
-        auto rgb = rd::developToRgb8(prev, p);
+        rd::DevelopOptions o;
+        o.scale = static_cast<float>(prev.width) / r.meta.fullWidth;
+        auto rgb = rd::toRgb8(rd::develop(prev, p, r.asShotGains, o));
         auto t3 = clk::now();
+        if (!half) {
+            o.scale = 1.0f;
+            auto t4 = clk::now();
+            auto big = rd::develop(r.linear, p, r.asShotGains, o);
+            auto t5 = clk::now();
+            std::printf("full-size develop %dx%d: %.0f ms\n", big.width, big.height,
+                        std::chrono::duration<double, std::milli>(t5 - t4).count());
+        }
         double m[3] = {0, 0, 0};
         for (size_t i = 0; i < rgb.size(); i += 3)
             for (int c = 0; c < 3; ++c) m[c] += rgb[i + c];

@@ -10,7 +10,7 @@ if(MSVC)
   add_compile_options(/utf-8 /W3 /permissive-)
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Concurrent)
 
 # LibRaw：Windows では vcpkg、Linux（開発用）では pkg-config
 find_package(libraw CONFIG QUIET)
@@ -27,11 +27,15 @@ endif()
 # 現像エンジン（画面に依存しない部分）
 add_library(rdengine STATIC
   src/engine/Image.h
+  src/engine/Parallel.h
+  src/engine/Color.h src/engine/Color.cpp
+  src/engine/Params.h src/engine/Params.cpp
+  src/engine/Pipeline.h src/engine/Pipeline.cpp
+  src/engine/Auto.h src/engine/Auto.cpp
   src/engine/RawLoader.h src/engine/RawLoader.cpp
-  src/engine/Develop.h src/engine/Develop.cpp
 )
 target_include_directories(rdengine PUBLIC src)
-target_link_libraries(rdengine PUBLIC ${LIBRAW_TARGET})
+target_link_libraries(rdengine PUBLIC ${LIBRAW_TARGET} Qt6::Core)
 if(WIN32)
   target_compile_definitions(rdengine PUBLIC NOMINMAX)
 endif()
@@ -50,3 +54,7 @@ install(TARGETS RawDeveloper RUNTIME DESTINATION .)
 add_executable(rd_selftest tests/engine_selftest.cpp)
 target_link_libraries(rd_selftest PRIVATE rdengine)
 install(TARGETS rd_selftest RUNTIME DESTINATION .)
+
+# Python 版との一致確認用：リニア画像(.f32)＋パラメータ(JSON) → 現像結果(.f32)
+add_executable(rd_develop tests/develop_tool.cpp)
+target_link_libraries(rd_develop PRIVATE rdengine)
