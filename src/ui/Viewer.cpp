@@ -12,6 +12,21 @@
 
 namespace rd {
 
+namespace {
+// 比率の違う画像（切り抜きなしの補正前など）を、枠の中に比率を保って収める
+QRectF fitInto(const QRectF& r, const QImage& img) {
+    if (img.isNull()) return r;
+    const double ia = double(img.width()) / img.height(), ra = r.width() / r.height();
+    if (std::abs(ia - ra) < 0.01) return r;
+    if (ia > ra) {
+        const double h = r.width() / ia;
+        return QRectF(r.left(), r.center().y() - h / 2, r.width(), h);
+    }
+    const double w = r.height() * ia;
+    return QRectF(r.center().x() - w / 2, r.top(), w, r.height());
+}
+}  // namespace
+
 Viewer::Viewer(QWidget* parent) : QWidget(parent) {
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
@@ -249,7 +264,7 @@ void Viewer::paintEvent(QPaintEvent*) {
             p.save();
             p.setClipRect(ps[i]);
             const QRectF r = imageRect(ps[i], i);
-            p.drawImage(r, *imgs[i]);
+            p.drawImage(imgs[i] == &before_ ? fitInto(r, before_) : r, *imgs[i]);
             if (imgs[i] == &img_) {
                 if (!roi_.isNull()) p.drawImage(QRectF(r.left() + roiRect_.x() * r.width() / full_.width(),
                                                        r.top() + roiRect_.y() * r.height() / full_.height(),
@@ -275,7 +290,7 @@ void Viewer::paintEvent(QPaintEvent*) {
         const QRectF r = imageRect(ps[0], 0);
         const bool wipe = (compare_ == CompareMode::WipeV || compare_ == CompareMode::WipeH) && !before_.isNull() && !cropMode_;
         if (bypass_ && !before_.isNull() && !cropMode_) {
-            p.drawImage(r, before_);
+            p.drawImage(fitInto(r, before_), before_);
             p.setPen(theme::kAccent);
             p.drawText(QRectF(8, 6, 300, 16), Qt::AlignLeft, QStringLiteral("補正前を表示中（Shift+D で戻る）"));
         } else {
@@ -291,7 +306,8 @@ void Viewer::paintEvent(QPaintEvent*) {
                     p.setClipRect(QRectF(r.left(), r.top(), r.width() * split_, r.height()));
                 else
                     p.setClipRect(QRectF(r.left(), r.top(), r.width(), r.height() * split_));
-                p.drawImage(r, before_);
+                p.fillRect(r, QColor(0x19, 0x19, 0x19));
+                p.drawImage(fitInto(r, before_), before_);
                 p.restore();
                 p.setPen(QPen(Qt::white, 1.5));
                 p.setFont(small);

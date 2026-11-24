@@ -124,6 +124,7 @@ private:
     quint64 hiresVersion_ = 0;
     QString beforeKey_;
     std::optional<Params> compareTarget_;
+    bool beforeCrop_ = true;   // 補正前にも切り抜き・角度を当てる
     QTimer saveTimer_;
     QString folder_;
     int loadToken_ = 0;

@@ -339,6 +339,16 @@ void MainWindow::buildActions() {
     link->setCheckable(true);
     link->setChecked(true);
     connect(link, &QAction::toggled, viewer_, &Viewer::setLinked);
+    QAction* beforeCrop = cmpMenu->addAction(QStringLiteral("補正前にも切り抜き・角度を適用"));
+    beforeCrop->setCheckable(true);
+    beforeCrop_ = QSettings().value("compare/before_crop", true).toBool();
+    beforeCrop->setChecked(beforeCrop_);
+    connect(beforeCrop, &QAction::toggled, this, [this](bool on) {
+        beforeCrop_ = on;
+        QSettings().setValue("compare/before_crop", on);
+        beforeKey_.clear();
+        requestRender();
+    });
     QAction* resetTarget = cmpMenu->addAction(QStringLiteral("比較相手：補正前"));
     connect(resetTarget, &QAction::triggered, this, [this] { setCompareTarget(std::nullopt, QStringLiteral("補正前")); });
     cmpMenu->addAction(QStringLiteral("（履歴を右クリックで、その時点と比較できます）"))->setEnabled(false);
@@ -532,19 +542,17 @@ void MainWindow::requestRender() {
     const bool cropMode = viewer_->cropMode();
     const bool detail = !dragging_;
     const quint64 ver = version_;
-    const QString key = geomKey(p) + (compareTarget_ ? "t" + QString::number(qHash(QJsonDocument(compareTarget_->toJson()).toJson())) : "") +
+    const QString key = geomKey(p) + (beforeCrop_ ? "bc" : "bn") + (compareTarget_ ? "t" + QString::number(qHash(QJsonDocument(compareTarget_->toJson()).toJson())) : "") +
                         (cropMode ? "c" : "");
     const bool needBefore = key != beforeKey_;
     Params before = compareTarget_ ? *compareTarget_ : (s_->isRaw ? Params::defaults() : Params::defaultsForImage());
     if (!compareTarget_) {
-        // 補正前も、レンズ補正と切り抜きは同じにして位置を合わせる（比較で形がずれないように）
-        before.enabled.lens = p.enabled.lens;
-        before.lensProfile = p.lensProfile; before.lensKey = p.lensKey; before.lensDistortion = p.lensDistortion;
-        before.lensVignetting = 0; before.lensCa = p.lensCa; before.lensAutotrim = p.lensAutotrim;
-        before.lensManualDistortion = p.lensManualDistortion; before.lensManualVignetting = 0;
+        // 補正前＝撮ったまま。レンズ補正（歪曲・周辺減光・色収差・自動トリミング）は掛けない
+        before.enabled.lens = false;
     }
     before.cropX = p.cropX; before.cropY = p.cropY; before.cropW = p.cropW; before.cropH = p.cropH;
-    before.cropAngle = p.cropAngle; before.enabled.crop = p.enabled.crop;
+    before.cropAngle = p.cropAngle;
+    before.enabled.crop = p.enabled.crop && beforeCrop_;
     const bool hasTarget = compareTarget_.has_value();
     if (!hasTarget) before.sharpenAmount = before.nrColor = 0;
     auto lin = s_->preview;
@@ -572,7 +580,9 @@ void MainWindow::requestRender() {
             DevelopOptions ob = o;
             ob.detail = hasTarget;
             r.before = toQImage(develop(*lin, before, asShot, ob));
-            if (r.before.size() != r.after.size()) r.before = r.before.scaled(r.after.size());
+            // 同じ構図なら大きさを合わせる（比率が違う＝切り抜きなしの補正前は、そのまま渡して画面側で収める）
+            const double ra = double(r.after.width()) / r.after.height(), rb = double(r.before.width()) / r.before.height();
+            if (r.before.size() != r.after.size() && std::abs(ra - rb) < 0.01) r.before = r.before.scaled(r.after.size());
             r.hasBefore = true;
         }
         return r;
