@@ -121,6 +121,26 @@ MainWindow::MainWindow() {
     connect(&loadWatcher_, &QFutureWatcher<std::shared_ptr<LoadedRaw>>::finished, this, &MainWindow::loaded);
     connect(&renderWatcher_, &QFutureWatcher<RenderResult>::finished, this, &MainWindow::rendered);
     connect(&hiresWatcher_, &QFutureWatcher<RenderResult>::finished, this, &MainWindow::hiresDone);
+    connect(&roiWatcher_, &QFutureWatcher<RoiResult>::finished, this, [this] {
+        const RoiResult r = roiWatcher_.result();
+        if (s_ && s_->path == r.path && !r.img.isNull() && !viewer_->isFit() && !viewer_->cropMode())
+            viewer_->setRoi(r.img, r.rect);
+        if (roiPending_) {
+            roiPending_ = false;
+            requestRoi();
+        }
+    });
+    connect(&fullWatcher_, &QFutureWatcher<std::shared_ptr<LoadedRaw>>::finished, this, [this] {
+        auto f = fullWatcher_.result();
+        viewer_->setMessage({});
+        if (s_ && s_->path == fullLoadingPath_ && f && f->error.empty()) {
+            s_->full = f;
+            requestDetailView();
+        }
+        fullLoadingPath_.clear();
+    });
+    viewTimer_.setSingleShot(true);
+    connect(&viewTimer_, &QTimer::timeout, this, &MainWindow::requestDetailView);
     saveTimer_.setSingleShot(true);
     connect(&saveTimer_, &QTimer::timeout, this, &MainWindow::saveSidecar);
     QSettings st;
@@ -207,7 +227,8 @@ void MainWindow::buildUi() {
     connect(panel_->wbPickButton(), &QToolButton::toggled, viewer_, &Viewer::setPicking);
     connect(viewer_, &Viewer::picked, this, &MainWindow::wbPick);
     connect(viewer_, &Viewer::probe, scopes_, &ScopesPanel::setProbe);
-    connect(viewer_, &Viewer::wantHiRes, this, &MainWindow::requestHires);
+    connect(viewer_, &Viewer::wantHiRes, this, &MainWindow::requestDetailView);
+    connect(viewer_, &Viewer::viewChanged, this, [this] { viewTimer_.start(30); });
     connect(viewer_, &Viewer::cropChanged, this, [this](const CropRect& r, bool final) {
         if (!s_) return;
         Params p = s_->params;
@@ -444,6 +465,7 @@ void MainWindow::openFile(const QString& path) {
     s_->path = path;
     s_->isRaw = isRawPath(path);
     viewer_->clear(QStringLiteral("読み込み中… ") + QFileInfo(path).fileName());
+    viewer_->resetView();
     compareTarget_.reset();
     viewer_->setBeforeLabel(QStringLiteral("補正前"));
     loadWatcher_.setFuture(QtConcurrent::run([path] { return loadAny(path, true); }));
@@ -511,7 +533,11 @@ void MainWindow::requestRender() {
     const auto asShot = s_->src->asShotGains;
     const float scale = s_->scale;
     const QString path = s_->path;
-    renderWatcher_.setFuture(QtConcurrent::run([lin, p, asShot, scale, detail, cropMode, ver, needBefore, before, hasTarget, path] {
+    Params sizeP = p;
+    if (cropMode) sizeP.enabled.crop = false;
+    const auto [fw, fh] = outputSize(sizeP, s_->src->meta.fullWidth, s_->src->meta.fullHeight);
+    const QSize fullSize(fw, fh);
+    renderWatcher_.setFuture(QtConcurrent::run([lin, p, asShot, scale, detail, cropMode, ver, needBefore, before, hasTarget, path, fullSize] {
         RenderResult r;
         r.path = path;
         r.version = ver;
@@ -521,7 +547,7 @@ void MainWindow::requestRender() {
         o.doCrop = !cropMode;
         const ImageF g = develop(*lin, p, asShot, o);
         r.after = toQImage(g);
-        r.full = QSize(qRound(g.width / scale), qRound(g.height / scale));
+        r.full = fullSize;
         if (needBefore) {
             DevelopOptions ob = o;
             ob.detail = hasTarget;
@@ -553,7 +579,6 @@ void MainWindow::rendered() {
         if (!dragging_ && r.version == version_ && !viewer_->cropMode()) {
             if (auto* it = film_->currentItem())
                 it->setIcon(QIcon(QPixmap::fromImage(r.after.scaled(240, 180, Qt::KeepAspectRatio, Qt::SmoothTransformation))));
-            if (!viewer_->isFit()) requestHires();
         }
     }
     if (renderPending_) {
@@ -570,10 +595,12 @@ void MainWindow::requestHires() {
     const QString path = s_->path;
     const auto asShot = s_->src->asShotGains;
     const int fullW = s_->src->meta.fullWidth;
+    const auto [ow, oh] = outputSize(p, s_->src->meta.fullWidth, s_->src->meta.fullHeight);
+    const QSize outSize(ow, oh);
     auto full = s_->full;
     const quint64 ver = version_;
     viewer_->setMessage(QStringLiteral("高精細表示を準備中…"));
-    hiresWatcher_.setFuture(QtConcurrent::run([=] {
+    hiresWatcher_.setFuture(QtConcurrent::run([p, path, asShot, fullW, full, ver, outSize] {
         RenderResult r;
         r.path = path;
         r.version = ver;
@@ -587,7 +614,7 @@ void MainWindow::requestHires() {
         o.scale = float(f->linear.width) / std::max(1, fullW);
         const ImageF g = develop(f->linear, p, asShot, o);
         r.after = toQImage(g);
-        r.full = QSize(qRound(g.width / o.scale), qRound(g.height / o.scale));
+        r.full = outSize;
         r.fullData = f;
         return r;
     }));
@@ -599,7 +626,59 @@ void MainWindow::hiresDone() {
     if (!s_ || s_->path != r.path || !r.error.isEmpty()) return;
     if (!s_->full && r.fullData) s_->full = r.fullData;
     if (r.version == version_ && !viewer_->isFit()) viewer_->setImage(r.after, r.full, true);
-    else if (!viewer_->isFit()) requestHires();
+    else if (!viewer_->isFit()) requestDetailView();
+}
+
+void MainWindow::requestDetailView() {
+    if (!s_ || !s_->src) return;
+    if (viewer_->isFit() || viewer_->cropMode()) {
+        viewer_->clearRoi();
+        return;
+    }
+    if (regionSupported(s_->params))
+        requestRoi();
+    else {
+        viewer_->clearRoi();
+        if (!dragging_) requestHires();
+    }
+}
+
+void MainWindow::ensureFull() {
+    if (!s_ || s_->full || fullWatcher_.isRunning()) return;
+    fullLoadingPath_ = s_->path;
+    viewer_->setMessage(QStringLiteral("フル解像度を読み込み中…"));
+    const QString path = s_->path;
+    fullWatcher_.setFuture(QtConcurrent::run([path] { return loadAny(path, false); }));
+}
+
+void MainWindow::requestRoi() {
+    if (!s_ || !s_->src || viewer_->isFit() || viewer_->cropMode()) return;
+    if (!s_->full) {
+        ensureFull();
+        return;
+    }
+    if (roiWatcher_.isRunning()) {
+        roiPending_ = true;
+        return;
+    }
+    const QRect vis = viewer_->visibleFullRect();
+    if (vis.isEmpty()) return;
+    auto full = s_->full;
+    const double k = double(full->linear.width) / std::max(1, s_->src->meta.fullWidth);
+    const QRect rLin(qRound(vis.x() * k), qRound(vis.y() * k), qRound(vis.width() * k), qRound(vis.height() * k));
+    const float scale = float(std::min(1.0, viewer_->zoom() * viewer_->devicePixelRatioF() / k));
+    const Params p = s_->params;
+    const auto asShot = s_->src->asShotGains;
+    const QString path = s_->path;
+    const quint64 ver = version_;
+    roiWatcher_.setFuture(QtConcurrent::run([full, rLin, vis, scale, p, asShot, path, ver] {
+        RoiResult r;
+        r.path = path;
+        r.version = ver;
+        r.rect = vis;
+        r.img = toQImage(developRegion(full->linear, p, asShot, rLin.x(), rLin.y(), rLin.width(), rLin.height(), scale));
+        return r;
+    }));
 }
 
 // ================================================================ params / history
@@ -620,6 +699,7 @@ void MainWindow::applyParams(const Params& p, bool final, const QString& desc, b
     }
     if (updatePanel) panel_->setParams(p, s_->asShotTT);
     requestRender();
+    if (!viewer_->isFit()) requestDetailView();
 }
 
 void MainWindow::pushHistory(const QString& desc) {
@@ -650,6 +730,7 @@ void MainWindow::jumpHistory(int i) {
     refreshHistory();
     saveTimer_.start(400);
     requestRender();
+    if (!viewer_->isFit()) requestDetailView();
 }
 
 void MainWindow::setCompareTarget(std::optional<Params> p, const QString& label) {
@@ -784,8 +865,9 @@ void MainWindow::runScriptedTest(const QString& prefix) {
     };
     auto shot = [this, prefix](int n) {
         grab().save(QString("%1_%2.png").arg(prefix).arg(n));
-        std::printf("shot %d: version %llu, history %d, compare %d\n", n, (unsigned long long)version_,
-                    s_ ? int(s_->history.size()) : -1, int(viewer_->compare()));
+        std::printf("shot %d: version %llu, history %d, compare %d, fit %d, zoom %.3f, roi %d\n", n,
+                    (unsigned long long)version_, s_ ? int(s_->history.size()) : -1, int(viewer_->compare()),
+                    int(viewer_->isFit()), viewer_->zoom(), int(!viewer_->visibleFullRect().isEmpty()));
         std::fflush(stdout);
     };
     auto steps = std::make_shared<std::vector<Step>>(std::vector<Step>{
@@ -819,6 +901,17 @@ void MainWindow::runScriptedTest(const QString& prefix) {
          }},
         {6000, [=, this] {
              shot(4);
+             Params p = s_->params;
+             p.exposure = 0.8f;
+             applyParams(p, false, "drag");   // スライダー操作中
+         }},
+        {1500, [=, this] {
+             Params p = s_->params;
+             p.exposure = 1.0f;
+             applyParams(p, true, "drag end");
+         }},
+        {2500, [=, this] {
+             shot(5);
              QApplication::quit();
          }},
     });

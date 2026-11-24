@@ -49,6 +49,13 @@ struct RenderResult {
     std::shared_ptr<LoadedRaw> fullData;  // 高精細表示で読み込んだフル解像度
 };
 
+struct RoiResult {
+    QString path;
+    QImage img;
+    QRect rect;
+    quint64 version = 0;
+};
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -71,6 +78,9 @@ private:
     void rendered();
     void requestHires();
     void hiresDone();
+    void requestDetailView();   // 拡大中：部分高精細（できなければ全体の高精細）
+    void requestRoi();
+    void ensureFull();
     void applyParams(const Params& p, bool final, const QString& desc, bool updatePanel = false);
     void pushHistory(const QString& desc);
     void refreshHistory();
@@ -97,6 +107,11 @@ private:
     QFutureWatcher<std::shared_ptr<LoadedRaw>> loadWatcher_;
     QFutureWatcher<RenderResult> renderWatcher_;
     QFutureWatcher<RenderResult> hiresWatcher_;
+    QFutureWatcher<RoiResult> roiWatcher_;
+    QFutureWatcher<std::shared_ptr<LoadedRaw>> fullWatcher_;
+    QString fullLoadingPath_;
+    bool roiPending_ = false;
+    QTimer viewTimer_;
     bool renderPending_ = false;
     bool dragging_ = false;
     quint64 version_ = 0;

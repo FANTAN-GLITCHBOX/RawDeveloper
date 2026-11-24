@@ -25,19 +25,51 @@ void Viewer::clear(const QString& message) {
 }
 
 void Viewer::setImage(const QImage& img, QSize fullSize, bool hires) {
-    const bool sizeChanged = fullSize != full_;
+    const QSize newFull = fullSize.isValid() ? fullSize : img.size();
+    if (newFull != full_) {
+        // 切り抜きなどで大きさが変わっても拡大率は保ち、表示位置だけ収める
+        if (!roi_.isNull()) roi_ = QImage();
+        full_ = newFull;
+    }
     img_ = img;
-    full_ = fullSize.isValid() ? fullSize : img.size();
     hires_ = hires;
     message_.clear();
     clipCache_ = QImage();
     mask_ = QImage();
-    if (fit_ || sizeChanged) {
-        if (sizeChanged) fit_ = true;
+    if (fit_) {
         zoom_ = fitZoom();
         offsets_ = {};
     }
+    clamp();
     update();
+}
+
+void Viewer::resetView() {
+    fit_ = true;
+    offsets_ = {};
+    roi_ = QImage();
+    zoom_ = fitZoom();
+    update();
+}
+
+void Viewer::setRoi(const QImage& img, const QRect& rectFull) {
+    roi_ = img;
+    roiRect_ = rectFull;
+    update();
+}
+
+QRect Viewer::visibleFullRect() const {
+    if (img_.isNull()) return {};
+    const auto ps = panes();
+    int idx = 0;
+    if (sideBySide()) idx = swapped_ ? 0 : 1;  // 補正後を表示している側
+    const QRectF r = imageRect(ps[idx], idx);
+    const QRectF vis = r.intersected(ps[idx]);
+    if (vis.isEmpty()) return {};
+    const double sx = full_.width() / r.width(), sy = full_.height() / r.height();
+    QRect out(int(std::floor((vis.left() - r.left()) * sx)), int(std::floor((vis.top() - r.top()) * sy)),
+              int(std::ceil(vis.width() * sx)) + 1, int(std::ceil(vis.height() * sy)) + 1);
+    return out.intersected(QRect(QPoint(0, 0), full_));
 }
 
 void Viewer::setCompare(CompareMode m) {
@@ -45,6 +77,7 @@ void Viewer::setCompare(CompareMode m) {
     if (fit_) zoom_ = fitZoom();
     clamp();
     update();
+    emit viewChanged();
 }
 
 bool Viewer::sideBySide() const {
@@ -111,7 +144,9 @@ void Viewer::setZoom(double z, QPointF anchor, bool fit) {
     zoom_ = z;
     clamp();
     if (!img_.isNull() && zoom_ > displayScaleOfImage() * 1.05) emit wantHiRes();
+    if (fit_) roi_ = QImage();
     update();
+    emit viewChanged();
 }
 
 void Viewer::clamp() {
@@ -145,6 +180,7 @@ int Viewer::paneAt(const QPointF& p) const {
 void Viewer::resizeEvent(QResizeEvent*) {
     if (fit_) zoom_ = fitZoom();
     clamp();
+    emit viewChanged();
 }
 
 QImage Viewer::clipOverlay() {
@@ -215,6 +251,10 @@ void Viewer::paintEvent(QPaintEvent*) {
             const QRectF r = imageRect(ps[i], i);
             p.drawImage(r, *imgs[i]);
             if (imgs[i] == &img_) {
+                if (!roi_.isNull()) p.drawImage(QRectF(r.left() + roiRect_.x() * r.width() / full_.width(),
+                                                       r.top() + roiRect_.y() * r.height() / full_.height(),
+                                                       roiRect_.width() * r.width() / full_.width(),
+                                                       roiRect_.height() * r.height() / full_.height()), roi_);
                 if (clip_) p.drawImage(r, clipOverlay());
                 if (!mask_.isNull()) p.drawImage(r, mask_);
             }
@@ -240,6 +280,11 @@ void Viewer::paintEvent(QPaintEvent*) {
             p.drawText(QRectF(8, 6, 300, 16), Qt::AlignLeft, QStringLiteral("補正前を表示中（Shift+D で戻る）"));
         } else {
             p.drawImage(r, img_);
+            if (!roi_.isNull() && !cropMode_)
+                p.drawImage(QRectF(r.left() + roiRect_.x() * r.width() / full_.width(),
+                                   r.top() + roiRect_.y() * r.height() / full_.height(),
+                                   roiRect_.width() * r.width() / full_.width(),
+                                   roiRect_.height() * r.height() / full_.height()), roi_);
             if (wipe) {
                 p.save();
                 if (compare_ == CompareMode::WipeV)
@@ -276,7 +321,8 @@ void Viewer::paintEvent(QPaintEvent*) {
     p.setPen(theme::kTextDim);
     const QString z = fit_ ? QStringLiteral("全体") : QString("%1%").arg(qRound(zoom_ * 100));
     p.drawText(QRectF(8, height() - 20, width() - 16, 16), Qt::AlignLeft | Qt::AlignVCenter,
-               QString("%1   %2×%3%4").arg(z).arg(full_.width()).arg(full_.height()).arg(hires_ ? QStringLiteral("　高精細") : ""));
+               QString("%1   %2×%3%4").arg(z).arg(full_.width()).arg(full_.height())
+                   .arg((hires_ || !roi_.isNull()) ? QStringLiteral("　高精細") : ""));
     if (!message_.isEmpty()) {
         p.setPen(theme::kAccent);
         p.drawText(QRectF(8, 6, width() - 16, 16), Qt::AlignRight, message_);
@@ -414,6 +460,7 @@ void Viewer::mouseMoveEvent(QMouseEvent* e) {
         o = offStart_ + (pos - panStart_);
         clamp();
         update();
+        emit viewChanged();
         return;
     }
     if (splitDrag_) {

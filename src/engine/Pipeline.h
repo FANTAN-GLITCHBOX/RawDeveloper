@@ -30,6 +30,17 @@ struct DevelopOptions {
 // リニア画像を現像し、ガンマ 0..1 の RGB を返す
 ImageF develop(const ImageF& lin, const Params& p, const std::array<float, 3>& asShot, const DevelopOptions& o);
 
+// 切り抜き後の画像の大きさ（元画像 w×h に対して）。プレビューでもフル解像度でも同じ基準で使う
+std::pair<int, int> outputSize(const Params& p, int w, int h);
+
+// 一部だけ現像できるか（回転・レンズの幾何補正があると全体が必要）
+bool regionSupported(const Params& p);
+
+// 切り抜き後の座標で (rx, ry, rw, rh) の範囲だけを、フル解像度のリニア画像から現像する
+// scale < 1 なら縮小してから現像する（ズームが 100% 未満のとき、画面の画素数に合わせて速く）
+ImageF developRegion(const ImageF& lin, const Params& p, const std::array<float, 3>& asShot, int rx, int ry, int rw,
+                     int rh, float scale = 1.0f);
+
 std::vector<std::uint8_t> toRgb8(const ImageF& g);
 std::vector<std::uint16_t> toRgb16(const ImageF& g);
 

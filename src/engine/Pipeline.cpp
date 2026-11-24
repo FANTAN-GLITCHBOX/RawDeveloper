@@ -433,6 +433,70 @@ ImageF develop(const ImageF& lin, const Params& p, const std::array<float, 3>& a
     return g;
 }
 
+std::pair<int, int> outputSize(const Params& p, int w, int h) {
+    if (!p.enabled.crop) return {w, h};
+    int x0 = static_cast<int>(std::lround(p.cropX * w)), y0 = static_cast<int>(std::lround(p.cropY * h));
+    int x1 = static_cast<int>(std::lround((p.cropX + p.cropW) * w));
+    int y1 = static_cast<int>(std::lround((p.cropY + p.cropH) * h));
+    x0 = std::max(0, x0);
+    y0 = std::max(0, y0);
+    x1 = std::min(w, std::max(x0 + 1, x1));
+    y1 = std::min(h, std::max(y0 + 1, y1));
+    return {x1 - x0, y1 - y0};
+}
+
+bool regionSupported(const Params& p) {
+    if (p.enabled.crop && std::abs(p.cropAngle) >= 1e-3f) return false;
+    if (p.enabled.lens && p.lens.value("active").toBool(false)) return false;
+    return true;
+}
+
+ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<float, 3>& asShot, int rx, int ry, int rw,
+                     int rh, float scale) {
+    scale = std::clamp(scale, 0.05f, 1.0f);
+    const int W = lin.width, H = lin.height;
+    int ox = 0, oy = 0;
+    if (pIn.enabled.crop) {
+        ox = std::max(0, static_cast<int>(std::lround(pIn.cropX * W)));
+        oy = std::max(0, static_cast<int>(std::lround(pIn.cropY * H)));
+    }
+    // ぼかし系の処理が端で変わらないよう、のりしろを付けて現像してから切り取る
+    float rad = 0;
+    if (pIn.enabled.detail) {
+        rad = std::max(rad, pIn.sharpenRadius * 4 + 2);
+        rad = std::max(rad, std::max(0.3f, pIn.nrColor / 100.0f * 6.0f) * 4 + 2);
+        if (pIn.nrLuma > 0) rad = std::max(rad, 2.5f * 4 * 3 + 2);
+    }
+    const int m = static_cast<int>(std::ceil(rad));
+    const int x0 = std::clamp(ox + rx - m, 0, W), y0 = std::clamp(oy + ry - m, 0, H);
+    const int x1 = std::clamp(ox + rx + rw + m, 0, W), y1 = std::clamp(oy + ry + rh + m, 0, H);
+    ImageF sub;
+    if (x1 <= x0 || y1 <= y0) return sub;
+    sub.resize(x1 - x0, y1 - y0);
+    for (int y = y0; y < y1; ++y) std::copy(lin.px(x0, y), lin.px(x1, y), sub.px(0, y - y0));
+    Params p = pIn;
+    p.enabled.crop = false;
+    DevelopOptions o;
+    o.scale = 1.0f;
+    double k = 1.0;
+    if (scale < 0.999f) {
+        const int edge = std::max(1, static_cast<int>(std::lround(std::max(sub.width, sub.height) * scale)));
+        sub = downscale(sub, edge);
+        k = static_cast<double>(sub.width) / (x1 - x0);
+        o.scale = static_cast<float>(k);
+    }
+    const ImageF g = develop(sub, p, asShot, o);
+    const int cx = static_cast<int>(std::lround((std::clamp(ox + rx, x0, x1) - x0) * k));
+    const int cy = static_cast<int>(std::lround((std::clamp(oy + ry, y0, y1) - y0) * k));
+    const int cw = std::min(static_cast<int>(std::lround(rw * k)), g.width - cx);
+    const int ch = std::min(static_cast<int>(std::lround(rh * k)), g.height - cy);
+    ImageF out;
+    if (cw <= 0 || ch <= 0) return out;
+    out.resize(cw, ch);
+    for (int y = 0; y < ch; ++y) std::copy(g.px(cx, cy + y), g.px(cx + cw, cy + y), out.px(0, y));
+    return out;
+}
+
 std::vector<std::uint8_t> toRgb8(const ImageF& g) {
     std::vector<std::uint8_t> out(g.data.size());
     for (size_t i = 0; i < out.size(); ++i)
