@@ -13,6 +13,7 @@
 #include <regex>
 
 #include "engine/Parallel.h"
+#include "engine/Paths.h"
 #include "engine/Params.h"
 #include "engine/RawLoader.h"
 
@@ -54,7 +55,7 @@ LensDb::LensDb() : d_(std::make_unique<Impl>()) {
     d_->db = std::make_unique<lfDatabase>();
     int loaded = 0;
     std::vector<std::string> dirs = dataDirs();
-    const QString user = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/lenses";
+    const QString user = appDataDir() + "/lenses";
     dirs.push_back(user.toStdString());
     for (const auto& dir : dirs) {
         const QDir qd(QString::fromStdString(dir));

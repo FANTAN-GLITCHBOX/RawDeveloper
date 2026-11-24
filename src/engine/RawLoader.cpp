@@ -71,6 +71,30 @@ std::array<float, 3> asShotFrom(const ImageF& day, const ImageF& cam) {
 
 }  // namespace
 
+namespace {
+void fillMeta(const LibRaw& raw, Metadata& m) {
+    const auto& id = raw.imgdata;
+    m.make = id.idata.make;
+    m.model = id.idata.model;
+    m.lensMake = id.lens.LensMake;
+    m.lensModel = id.lens.Lens;
+    m.iso = id.other.iso_speed;
+    m.shutter = id.other.shutter;
+    m.aperture = id.other.aperture;
+    m.focal = id.other.focal_len;
+    m.timestamp = static_cast<long long>(id.other.timestamp);
+    m.fullWidth = id.sizes.flip & 4 ? id.sizes.height : id.sizes.width;
+    m.fullHeight = id.sizes.flip & 4 ? id.sizes.width : id.sizes.height;
+}
+}  // namespace
+
+Metadata readRawMetadata(const std::vector<unsigned char>& bytes) {
+    Metadata m;
+    auto raw = std::make_unique<LibRaw>();
+    if (raw->open_buffer(const_cast<unsigned char*>(bytes.data()), bytes.size()) == LIBRAW_SUCCESS) fillMeta(*raw, m);
+    return m;
+}
+
 LoadedRaw loadRaw(const std::vector<unsigned char>& bytes, bool half) {
     LoadedRaw res;
     auto raw = std::make_unique<LibRaw>();
@@ -83,17 +107,7 @@ LoadedRaw loadRaw(const std::vector<unsigned char>& bytes, bool half) {
         res.error = libraw_strerror(rc);
         return res;
     }
-    const auto& id = raw->imgdata;
-    res.meta.make = id.idata.make;
-    res.meta.model = id.idata.model;
-    res.meta.lensMake = id.lens.LensMake;
-    res.meta.lensModel = id.lens.Lens;
-    res.meta.iso = id.other.iso_speed;
-    res.meta.shutter = id.other.shutter;
-    res.meta.aperture = id.other.aperture;
-    res.meta.focal = id.other.focal_len;
-    res.meta.fullWidth = id.sizes.flip & 4 ? id.sizes.height : id.sizes.width;
-    res.meta.fullHeight = id.sizes.flip & 4 ? id.sizes.width : id.sizes.height;
+    fillMeta(*raw, res.meta);
 
     // 撮影時 WB の推定：半分サイズでデイライト / カメラ WB を現像して比べる
     ImageF dayHalf, camHalf;

@@ -8,6 +8,7 @@ namespace rd {
 struct Metadata {
     std::string make, model, lensMake, lensModel;
     float iso = 0, shutter = 0, aperture = 0, focal = 0;
+    long long timestamp = 0;  // 撮影日時（UNIX 時刻）
     int fullWidth = 0, fullHeight = 0;
 };
 
@@ -26,5 +27,8 @@ LoadedRaw loadRaw(const std::vector<unsigned char>& bytes, bool half);
 std::vector<unsigned char> extractThumbJpeg(const std::vector<unsigned char>& bytes, int& flip);
 
 bool isRawExtension(const std::string& extLower);
+
+// メタデータだけ（現像しないので速い）
+Metadata readRawMetadata(const std::vector<unsigned char>& bytes);
 
 }  // namespace rd

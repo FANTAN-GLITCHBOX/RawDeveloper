@@ -4,24 +4,32 @@
 #include <QJsonObject>
 #include <QMainWindow>
 #include <QTimer>
+#include <functional>
 #include <memory>
 #include <optional>
+
+#include "core/Catalog.h"
 
 #include "engine/Lens.h"
 #include "engine/Params.h"
 #include "engine/RawLoader.h"
+#include "ui/Library.h"
 
 class QLabel;
 class QListWidget;
 class QListWidgetItem;
 class QToolButton;
 class QActionGroup;
+class QStackedWidget;
+class QDockWidget;
+class QAction;
 
 namespace rd {
 
 class Viewer;
 class DevelopPanel;
 class ScopesPanel;
+class ScopeView;
 
 // 開いている 1 枚の写真
 struct Session {
@@ -94,16 +102,50 @@ private:
     void autoAdjust(float strength, bool wbOnly);
     void wbPick(int x, int y);
     void cropTool(bool on);
-    void exportJpeg();
     void step(int d);
-    void loadThumbs();
+    // ライブラリ
+    void setMode(bool develop);
+    void folderScanned();
+    QString currentPath() const;
+    QStringList selectedPaths() const;
+    QStringList filteredPaths() const;
+    QStringList ratingTargets() const;
+    void showLibInfo(const QString& path);
+    void rate(const std::function<void(PhotoMark&)>& fn, const QString& desc);
+    void saveMark(const QString& path, const PhotoMark& m, const PhotoMark& before);
+    PhotoMark markOf(const QString& path);
+    void copyFromOther(const QString& path);
+    void trashRejected();
+    void showLinks();
+    void toggleFullscreen();
+    // 書き出し
+    void exportDialog();
+    void storeEditedThumb();
     void setCompareTarget(std::optional<Params> p, const QString& label);
     Params makeBeforeParams(const Params& p) const;
 
     Viewer* viewer_ = nullptr;
     DevelopPanel* panel_ = nullptr;
     ScopesPanel* scopes_ = nullptr;
-    QListWidget* film_ = nullptr;
+    ThumbView* film_ = nullptr;
+    ThumbView* grid_ = nullptr;
+    PhotoModel* model_ = nullptr;
+    FilterProxy* proxy_ = nullptr;
+    FilterBar* filterBar_ = nullptr;
+    FolderTree* tree_ = nullptr;
+    QStackedWidget* stack_ = nullptr;
+    QLabel* libInfo_ = nullptr;
+    ScopeView* libHist_ = nullptr;
+    QList<QDockWidget*> docks_;
+    QAction* modeLib_ = nullptr;
+    QAction* modeDev_ = nullptr;
+    QWidget* toolbarWidget_ = nullptr;
+    QFutureWatcher<std::vector<PhotoItem>> scanWatcher_;
+    QString pendingSelect_;
+    bool developMode_ = false;
+    QImage pendingThumb_;
+    QString pendingThumbPath_;
+    bool exporting_ = false;
     QListWidget* historyList_ = nullptr;
     QLabel* metaLabel_ = nullptr;
     QToolButton* compareBtn_ = nullptr;
@@ -131,7 +173,6 @@ private:
     bool beforeCrop_ = true;   // 補正前にも切り抜き・角度を当てる
     QTimer saveTimer_;
     QString folder_;
-    int loadToken_ = 0;
     std::optional<Params> clipboard_;
     std::optional<Params> cropBackup_;
 };

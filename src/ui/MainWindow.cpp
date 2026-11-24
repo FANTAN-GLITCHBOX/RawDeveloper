@@ -32,10 +32,28 @@
 #include <cstdio>
 #include <functional>
 
+#include <QCheckBox>
+#include <QDateTime>
+#include <QDesktopServices>
+#include <QInputDialog>
+#include <QPointer>
+#include <QUrl>
+#include <QItemSelectionModel>
+#include <QProgressDialog>
+#include <QSaveFile>
+#include <QSplitter>
+#include <QStackedWidget>
+#include <atomic>
+
+#include "core/Catalog.h"
+#include "core/Export.h"
+#include "core/Xmp.h"
 #include "engine/Auto.h"
 #include "engine/Color.h"
 #include "engine/Pipeline.h"
 #include "ui/DevelopPanel.h"
+#include "ui/Dialogs.h"
+#include "ui/Library.h"
 #include "ui/Scopes.h"
 #include "ui/Theme.h"
 #include "ui/Viewer.h"
@@ -160,27 +178,90 @@ MainWindow::MainWindow() {
 // ================================================================ UI
 
 void MainWindow::buildUi() {
-    auto* central = new QWidget;
-    auto* v = new QVBoxLayout(central);
+    model_ = new PhotoModel(this);
+    proxy_ = new FilterProxy;
+    proxy_->setParent(this);
+    proxy_->setSourceModel(model_);
+    proxy_->setDynamicSortFilter(false);
+
+    // ---- ライブラリ
+    auto* lib = new QWidget;
+    auto* lv = new QVBoxLayout(lib);
+    lv->setContentsMargins(0, 0, 0, 0);
+    lv->setSpacing(0);
+    filterBar_ = new FilterBar(proxy_);
+    lv->addWidget(filterBar_);
+    auto* sp = new QSplitter;
+    tree_ = new FolderTree;
+    connect(tree_, &FolderTree::folderChosen, this, [this](const QString& d) { openFolder(d); });
+    grid_ = new ThumbView(false);
+    grid_->setModel(proxy_);
+    grid_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(grid_, &QListView::doubleClicked, this, [this] { setMode(true); });
+    auto* info = new QWidget;
+    auto* iv = new QVBoxLayout(info);
+    iv->setContentsMargins(6, 6, 6, 6);
+    iv->addWidget(new QLabel(QStringLiteral("ヒストグラム（簡易：埋め込みプレビューから）")));
+    libHist_ = new ScopeView(ScopeMode::HistRgb);
+    libHist_->setFixedHeight(150);
+    iv->addWidget(libHist_);
+    libInfo_ = new QLabel;
+    libInfo_->setWordWrap(true);
+    libInfo_->setAlignment(Qt::AlignTop);
+    libInfo_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    iv->addWidget(libInfo_, 1);
+    sp->addWidget(tree_);
+    sp->addWidget(grid_);
+    sp->addWidget(info);
+    sp->setSizes({240, 1000, 280});
+    sp->setStretchFactor(1, 1);
+    lv->addWidget(sp, 1);
+
+    // ---- 現像
+    auto* dev = new QWidget;
+    auto* v = new QVBoxLayout(dev);
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(0);
     viewer_ = new Viewer;
     viewer_->clear(QStringLiteral("写真を開くか、ここにドラッグしてください"));
     v->addWidget(viewer_, 1);
-    film_ = new QListWidget;
-    film_->setViewMode(QListView::IconMode);
-    film_->setFlow(QListView::LeftToRight);
-    film_->setWrapping(false);
-    film_->setIconSize(QSize(120, 90));
-    film_->setFixedHeight(130);
-    film_->setMovement(QListView::Static);
-    film_->setSpacing(4);
-    film_->setToolTip(QStringLiteral("中クリック：その写真の調整を今の写真にコピー"));
-    connect(film_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* it) {
-        if (it) openFile(it->data(Qt::UserRole).toString());
-    });
+    film_ = new ThumbView(true);
+    film_->setModel(proxy_);
+    film_->setSelectionModel(grid_->selectionModel());
+    connect(film_, &ThumbView::middleClicked, this, &MainWindow::copyFromOther);
     v->addWidget(film_);
-    setCentralWidget(central);
+
+    stack_ = new QStackedWidget;
+    stack_->addWidget(lib);
+    stack_->addWidget(dev);
+    setCentralWidget(stack_);
+
+    connect(grid_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex& cur) {
+        if (!cur.isValid()) return;
+        const auto* it = static_cast<const PhotoItem*>(cur.data(PhotoModel::ItemRole).value<const void*>());
+        showLibInfo(it->path);
+        if (developMode_) openFile(it->path);
+        film_->scrollTo(cur);
+    });
+    connect(grid_, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        QMenu m;
+        for (int i = 0; i <= 5; ++i)
+            m.addAction(i ? QString(i, QChar(0x2605)) : QStringLiteral("★ なし"), this,
+                        [this, i] { rate([i](PhotoMark& k) { k.rating = i; }, i ? QStringLiteral("★%1").arg(i) : QStringLiteral("★なし")); });
+        m.addSeparator();
+        for (const QString& lb : kLabels)
+            m.addAction(QStringLiteral("ラベル：") + labelName(lb), this,
+                        [this, lb] { rate([lb](PhotoMark& k) { k.label = lb; }, QStringLiteral("ラベル：") + labelName(lb)); });
+        m.addAction(QStringLiteral("ラベルなし"), this, [this] { rate([](PhotoMark& k) { k.label.clear(); }, QStringLiteral("ラベルなし")); });
+        m.addSeparator();
+        m.addAction(QStringLiteral("採用"), this, [this] { rate([](PhotoMark& k) { k.flag = 1; }, QStringLiteral("採用")); });
+        m.addAction(QStringLiteral("除外"), this, [this] { rate([](PhotoMark& k) { k.flag = -1; }, QStringLiteral("除外")); });
+        m.addAction(QStringLiteral("フラグなし"), this, [this] { rate([](PhotoMark& k) { k.flag = 0; }, QStringLiteral("フラグなし")); });
+        m.addSeparator();
+        m.addAction(QStringLiteral("書き出したファイル／元の写真…"), this, &MainWindow::showLinks);
+        m.exec(grid_->viewport()->mapToGlobal(pos));
+    });
+    connect(&scanWatcher_, &QFutureWatcher<std::vector<PhotoItem>>::finished, this, &MainWindow::folderScanned);
 
     scopes_ = new ScopesPanel;
     auto* dockScopes = new QDockWidget(QStringLiteral("スコープ"), this);
@@ -196,8 +277,10 @@ void MainWindow::buildUi() {
     auto* dockHist = new QDockWidget(QStringLiteral("履歴"), this);
     dockHist->setObjectName("dock_history");
     dockHist->setWidget(historyList_);
-    for (auto* d : {dockScopes, dockPanel, dockHist})
+    for (auto* d : {dockScopes, dockPanel, dockHist}) {
         d->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+        docks_ << d;
+    }
     addDockWidget(Qt::RightDockWidgetArea, dockScopes);
     addDockWidget(Qt::RightDockWidgetArea, dockPanel);
     splitDockWidget(dockScopes, dockPanel, Qt::Vertical);
@@ -259,6 +342,21 @@ void MainWindow::buildActions() {
     auto* tb = addToolBar(QStringLiteral("ツール"));
     tb->setObjectName("toolbar");
     tb->setMovable(false);
+    toolbarWidget_ = tb;
+    auto* modeGroup = new QActionGroup(this);
+    modeLib_ = tb->addAction(QStringLiteral("ライブラリ (G)"));
+    modeDev_ = tb->addAction(QStringLiteral("現像 (D)"));
+    for (QAction* a : {modeLib_, modeDev_}) {
+        a->setCheckable(true);
+        modeGroup->addAction(a);
+    }
+    modeLib_->setShortcut(QKeySequence("G"));
+    modeDev_->setShortcut(QKeySequence("D"));
+    connect(modeLib_, &QAction::triggered, this, [this] { setMode(false); });
+    connect(modeDev_, &QAction::triggered, this, [this] { setMode(true); });
+    addAction(modeLib_);
+    addAction(modeDev_);
+    tb->addSeparator();
     auto add = [&](QMenu* menu, const QString& text, const QKeySequence& key, auto fn, bool toolbar = false) {
         QAction* a = menu->addAction(text);
         if (!key.isEmpty()) a->setShortcut(key);
@@ -277,7 +375,9 @@ void MainWindow::buildActions() {
         const QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("写真のフォルダ"), folder_);
         if (!d.isEmpty()) openFolder(d);
     }, true);
-    add(file, QStringLiteral("JPEG で書き出し…"), QKeySequence("Ctrl+Shift+E"), [this] { exportJpeg(); }, true);
+    add(file, QStringLiteral("書き出し…"), QKeySequence("Ctrl+Shift+E"), [this] { exportDialog(); }, true);
+    file->addSeparator();
+    add(file, QStringLiteral("環境設定…"), QKeySequence("Ctrl+,"), [this] { SettingsDialog(this).exec(); });
     file->addSeparator();
     add(file, QStringLiteral("終了"), QKeySequence::Quit, [this] { close(); });
 
@@ -301,6 +401,32 @@ void MainWindow::buildActions() {
     add(edit, QStringLiteral("すべての調整をリセット"), QKeySequence("Ctrl+Shift+R"), [this] {
         if (s_) applyParams(s_->isRaw ? Params::defaults() : Params::defaultsForImage(), true, QStringLiteral("すべてリセット"), true);
     });
+
+    // 写真（評価）
+    QMenu* photo = menuBar()->addMenu(QStringLiteral("写真"));
+    for (int i = 0; i <= 5; ++i)
+        add(photo, i ? QStringLiteral("★ %1").arg(i) : QStringLiteral("★ なし"), QKeySequence(QString::number(i)),
+            [this, i] { rate([i](PhotoMark& k) { k.rating = i; }, i ? QStringLiteral("★%1").arg(i) : QStringLiteral("★なし")); });
+    add(photo, QStringLiteral("★を 1 つ減らす"), QKeySequence("["), [this] {
+        rate([](PhotoMark& k) { k.rating = std::max(0, k.rating - 1); }, QStringLiteral("★を変更"));
+    });
+    add(photo, QStringLiteral("★を 1 つ増やす"), QKeySequence("]"), [this] {
+        rate([](PhotoMark& k) { k.rating = std::min(5, k.rating + 1); }, QStringLiteral("★を変更"));
+    });
+    photo->addSeparator();
+    for (int i = 0; i < kLabels.size(); ++i) {
+        const QString lb = kLabels[i];
+        add(photo, QStringLiteral("ラベル：") + labelName(lb), i < 4 ? QKeySequence(QString::number(6 + i)) : QKeySequence(),
+            [this, lb] { rate([lb](PhotoMark& k) { k.label = k.label == lb ? QString() : lb; }, QStringLiteral("ラベル：") + labelName(lb)); });
+    }
+    add(photo, QStringLiteral("ラベルなし"), QKeySequence(), [this] { rate([](PhotoMark& k) { k.label.clear(); }, QStringLiteral("ラベルなし")); });
+    photo->addSeparator();
+    add(photo, QStringLiteral("採用"), QKeySequence("P"), [this] { rate([](PhotoMark& k) { k.flag = 1; }, QStringLiteral("採用")); });
+    add(photo, QStringLiteral("除外"), QKeySequence("X"), [this] { rate([](PhotoMark& k) { k.flag = -1; }, QStringLiteral("除外")); });
+    add(photo, QStringLiteral("フラグなし"), QKeySequence("U"), [this] { rate([](PhotoMark& k) { k.flag = 0; }, QStringLiteral("フラグなし")); });
+    photo->addSeparator();
+    add(photo, QStringLiteral("除外した写真をごみ箱へ…"), QKeySequence(), [this] { trashRejected(); });
+    add(photo, QStringLiteral("書き出したファイル／元の写真…"), QKeySequence(), [this] { showLinks(); });
 
     // 表示・比較
     QMenu* view = menuBar()->addMenu(QStringLiteral("表示"));
@@ -376,20 +502,29 @@ void MainWindow::buildActions() {
     add(view, QStringLiteral("次の写真"), QKeySequence("Right"), [this] { step(1); });
     add(view, QStringLiteral("WB スポイト"), QKeySequence("W"), [this] { panel_->wbPickButton()->toggle(); });
     add(view, QStringLiteral("切り抜きツール"), QKeySequence("R"), [this] { panel_->cropButton()->toggle(); });
-    auto* enter = new QShortcut(QKeySequence(Qt::Key_Return), this);
-    connect(enter, &QShortcut::activated, this, [this] {
-        if (viewer_->cropMode()) emit viewer_->cropChanged(viewer_->cropRect(), true);
-    });
+    add(view, QStringLiteral("全画面で選別"), QKeySequence("F"), [this] { toggleFullscreen(); });
+    for (auto key : {Qt::Key_Return, Qt::Key_Enter}) {
+        auto* enter = new QShortcut(QKeySequence(key), this);
+        connect(enter, &QShortcut::activated, this, [this] {
+            if (!developMode_) setMode(true);
+            else if (viewer_->cropMode()) emit viewer_->cropChanged(viewer_->cropRect(), true);
+        });
+    }
     auto* esc = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     connect(esc, &QShortcut::activated, this, [this] {
-        if (!viewer_->cropMode() || !s_) return;
-        panel_->cropButton()->setChecked(false);
-        if (cropBackup_) applyParams(*cropBackup_, true, QStringLiteral("切り抜きを取消"), true);
+        if (viewer_->cropMode() && s_) {
+            panel_->cropButton()->setChecked(false);
+            if (cropBackup_) applyParams(*cropBackup_, true, QStringLiteral("切り抜きを取消"), true);
+        } else if (isFullScreen()) {
+            toggleFullscreen();
+        }
     });
 
     QMenu* help = menuBar()->addMenu(QStringLiteral("ヘルプ"));
     add(help, QStringLiteral("操作一覧"), QKeySequence("F1"), [this] {
         QMessageBox::information(this, QStringLiteral("操作一覧"), QStringLiteral(
+            "<b>評価</b><br>0〜5：★　[ ]：★を増減　6〜9：ラベル（赤・黄・緑・青）、紫はメニュー<br>"
+            "P：採用　X：除外　U：フラグなし　G：ライブラリ　D / Enter：現像　F：全画面で選別<br><br>"
             "<b>調整（Resolve 風）</b><br>"
             "数値の上を左右ドラッグ：増減（Ctrl：微調整／Shift：粗調整）<br>"
             "ダブルクリック：リセット　クリック：数値入力（+=0.3 で相対）<br>"
@@ -411,68 +546,148 @@ void MainWindow::buildActions() {
 // ================================================================ folder / file
 
 void MainWindow::openFolder(const QString& folder, const QString& select) {
-    folder_ = folder;
-    QSettings().setValue("library/folder", folder);
-    QDir dir(folder);
-    const QFileInfoList files = dir.entryInfoList(QDir::Files, QDir::Name | QDir::IgnoreCase);
-    QSignalBlocker b(film_);
-    film_->clear();
-    QListWidgetItem* sel = nullptr;
-    for (const QFileInfo& fi : files) {
-        if (!isSupported(fi.filePath())) continue;
-        auto* it = new QListWidgetItem(fi.fileName());
-        it->setData(Qt::UserRole, fi.absoluteFilePath());
-        it->setSizeHint(QSize(130, 120));
-        film_->addItem(it);
-        if (fi.absoluteFilePath() == QFileInfo(select).absoluteFilePath()) sel = it;
-    }
-    setWindowTitle(QStringLiteral("RawDeveloper — ") + QDir::toNativeSeparators(folder));
-    statusBar()->showMessage(QStringLiteral("%1 枚").arg(film_->count()), 3000);
-    loadThumbs();
-    b.unblock();
-    if (!sel && film_->count()) sel = film_->item(0);
-    if (sel) film_->setCurrentItem(sel);
+    flushSave();
+    folder_ = QDir::fromNativeSeparators(folder);
+    QSettings().setValue("library/folder", folder_);
+    tree_->reveal(folder_);
+    pendingSelect_ = select.isEmpty() ? QString() : QFileInfo(select).absoluteFilePath();
+    setWindowTitle(QStringLiteral("RawDeveloper — ") + QDir::toNativeSeparators(folder_));
+    statusBar()->showMessage(QStringLiteral("読み込み中…"));
+    const QString f = folder_;
+    scanWatcher_.setFuture(QtConcurrent::run([f] { return scanFolder(f); }));
 }
 
-void MainWindow::loadThumbs() {
-    const int token = ++loadToken_;
-    QStringList paths;
-    for (int i = 0; i < film_->count(); ++i) paths << film_->item(i)->data(Qt::UserRole).toString();
-    QThreadPool::globalInstance()->start([this, paths, token] {
-        for (int i = 0; i < paths.size(); ++i) {
-            if (token != loadToken_) return;
-            QImage img;
-            const QString& p = paths[i];
-            if (isRawPath(p)) {
-                int flip = 0;
-                const auto jpg = extractThumbJpeg(readAll(p), flip);
-                if (!jpg.empty()) img.loadFromData(jpg.data(), int(jpg.size()));
-                if (!img.isNull()) {
-                    img = img.scaled(240, 180, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                    QTransform t;
-                    if (flip == 3) t.rotate(180);
-                    else if (flip == 5) t.rotate(-90);
-                    else if (flip == 6) t.rotate(90);
-                    img = img.transformed(t);
-                }
-            } else {
-                QImageReader r(p);
-                r.setAutoTransform(true);
-                const QSize sz = r.size();
-                if (sz.isValid()) r.setScaledSize(sz.scaled(240, 180, Qt::KeepAspectRatio));
-                img = r.read();
-            }
-            if (img.isNull()) continue;
-            QMetaObject::invokeMethod(this, [this, i, img, token] {
-                if (token == loadToken_ && i < film_->count()) film_->item(i)->setIcon(QIcon(QPixmap::fromImage(img)));
-            });
-        }
-    });
+void MainWindow::folderScanned() {
+    s_.reset();
+    model_->setItems(scanWatcher_.result());
+    proxy_->refilter();
+    filterBar_->updateCount();
+    statusBar()->showMessage(QStringLiteral("%1 枚").arg(model_->rowCount()), 3000);
+    QModelIndex sel;
+    for (int i = 0; i < proxy_->rowCount() && !pendingSelect_.isEmpty(); ++i) {
+        const QModelIndex ix = proxy_->index(i, 0);
+        if (static_cast<const PhotoItem*>(ix.data(PhotoModel::ItemRole).value<const void*>())->path == pendingSelect_) sel = ix;
+    }
+    if (!sel.isValid() && proxy_->rowCount()) sel = proxy_->index(0, 0);
+    if (!pendingSelect_.isEmpty() && !developMode_) setMode(true);
+    if (sel.isValid()) grid_->selectionModel()->setCurrentIndex(sel, QItemSelectionModel::ClearAndSelect);
+    else viewer_->clear(QStringLiteral("このフォルダには写真がありません"));
+    pendingSelect_.clear();
 }
 
 void MainWindow::step(int d) {
-    const int r = film_->currentRow() + d;
-    if (r >= 0 && r < film_->count()) film_->setCurrentRow(r);
+    const QModelIndex cur = grid_->currentIndex();
+    const int r = (cur.isValid() ? cur.row() : -1) + d;
+    if (r < 0 || r >= proxy_->rowCount()) return;
+    const QModelIndex ix = proxy_->index(r, 0);
+    grid_->selectionModel()->setCurrentIndex(ix, QItemSelectionModel::ClearAndSelect);
+    grid_->scrollTo(ix);
+    film_->scrollTo(ix);
+}
+
+void MainWindow::setMode(bool develop) {
+    if (develop && !grid_->currentIndex().isValid()) {
+        if (!proxy_->rowCount()) {
+            statusBar()->showMessage(QStringLiteral("写真がありません。フォルダを開いてください"), 4000);
+            develop = false;
+        } else {
+            grid_->selectionModel()->setCurrentIndex(proxy_->index(0, 0), QItemSelectionModel::ClearAndSelect);
+        }
+    }
+    developMode_ = develop;
+    stack_->setCurrentIndex(develop ? 1 : 0);
+    (develop ? modeDev_ : modeLib_)->setChecked(true);
+    for (auto* d : docks_) d->setVisible(develop && !isFullScreen());
+    if (develop) {
+        const QString p = currentPath();
+        if (!p.isEmpty()) openFile(p);
+        viewer_->setFocus();
+        film_->scrollTo(grid_->currentIndex());
+    } else {
+        flushSave();
+        grid_->setFocus();
+        grid_->scrollTo(grid_->currentIndex());
+    }
+}
+
+QString MainWindow::currentPath() const {
+    const QModelIndex ix = grid_->currentIndex();
+    if (!ix.isValid()) return {};
+    return static_cast<const PhotoItem*>(ix.data(PhotoModel::ItemRole).value<const void*>())->path;
+}
+
+QStringList MainWindow::selectedPaths() const {
+    QStringList out;
+    for (const QModelIndex& ix : grid_->selectionModel()->selectedIndexes())
+        out << static_cast<const PhotoItem*>(ix.data(PhotoModel::ItemRole).value<const void*>())->path;
+    if (out.isEmpty() && !currentPath().isEmpty()) out << currentPath();
+    return out;
+}
+
+QStringList MainWindow::filteredPaths() const {
+    QStringList out;
+    for (int i = 0; i < proxy_->rowCount(); ++i)
+        out << static_cast<const PhotoItem*>(proxy_->index(i, 0).data(PhotoModel::ItemRole).value<const void*>())->path;
+    return out;
+}
+
+QStringList MainWindow::ratingTargets() const {
+    const QStringList sel = selectedPaths();
+    if (developMode_ && sel.size() <= 1 && s_) return {s_->path};
+    return sel;
+}
+
+void MainWindow::showLibInfo(const QString& path) {
+    PhotoItem* it = model_->item(path);
+    if (!it) return;
+    if (!it->thumb.isNull()) {
+        const QImage t = it->thumb.convertToFormat(QImage::Format_RGB888);
+        std::vector<std::uint8_t> packed(static_cast<size_t>(t.width()) * t.height() * 3);
+        for (int y = 0; y < t.height(); ++y) memcpy(&packed[static_cast<size_t>(y) * t.width() * 3], t.constScanLine(y), t.width() * 3);
+        libHist_->setData(ScopeData::make(packed.data(), t.width(), t.height()));
+    }
+    auto rows = std::make_shared<QStringList>();
+    const QString dim = "<span style='color:#8c8c8c'>%1</span>　%2";
+    *rows << dim.arg(QStringLiteral("ファイル"), it->name);
+    QString stars = it->rating ? QString(it->rating, QChar(0x2605)) : QStringLiteral("なし");
+    if (!it->label.isEmpty()) stars += "　" + labelName(it->label);
+    if (it->flag) stars += it->flag == 1 ? QStringLiteral("　採用") : QStringLiteral("　除外");
+    *rows << dim.arg(QStringLiteral("評価"), stars);
+    if (it->exports) *rows << dim.arg(QStringLiteral("書き出し"), QStringLiteral("%1 件").arg(it->exports));
+    if (it->isExport) {
+        const QString src = Catalog::get().sourceOf(path);
+        *rows << dim.arg(QStringLiteral("元の写真"), QFileInfo(src).fileName() + (it->missingLink ? QStringLiteral("（見つかりません）") : ""));
+    }
+    libInfo_->setText(rows->join("<br>"));
+    const bool raw = it->isRaw;
+    QtConcurrent::run([path, raw] {
+        Metadata m;
+        if (raw) {
+            QFile f(path);
+            if (f.open(QIODevice::ReadOnly)) {
+                const QByteArray b = f.readAll();
+                m = readRawMetadata(std::vector<unsigned char>(b.begin(), b.end()));
+            }
+        } else {
+            QImageReader r(path);
+            m.fullWidth = r.size().width();
+            m.fullHeight = r.size().height();
+        }
+        return m;
+    }).then(this, [this, path, rows, dim](const Metadata& m) {
+        if (currentPath() != path) return;
+        QStringList r = *rows;
+        if (!m.make.empty()) r << dim.arg(QStringLiteral("カメラ"), QString::fromStdString(m.make + " " + m.model));
+        if (!m.lensModel.empty()) r << dim.arg(QStringLiteral("レンズ"), QString::fromStdString(m.lensModel));
+        if (m.iso > 0)
+            r << dim.arg(QStringLiteral("撮影条件"), QString("ISO %1  F%2  %3mm  %4")
+                                                         .arg(m.iso).arg(m.aperture, 0, 'f', 1).arg(m.focal, 0, 'f', 0)
+                                                         .arg(m.shutter >= 1 ? QString::number(m.shutter) + QStringLiteral("秒")
+                                                                             : QString("1/%1").arg(qRound(1 / std::max(m.shutter, 1e-4f)))));
+        if (m.timestamp > 0) r << dim.arg(QStringLiteral("撮影日時"), QDateTime::fromSecsSinceEpoch(m.timestamp).toString("yyyy-MM-dd HH:mm:ss"));
+        if (m.fullWidth > 0) r << dim.arg(QStringLiteral("画素数"), QString("%1 × %2").arg(m.fullWidth).arg(m.fullHeight));
+        libInfo_->setText(r.join("<br>"));
+    });
 }
 
 void MainWindow::openFile(const QString& path) {
@@ -603,9 +818,10 @@ void MainWindow::rendered() {
         }
         panel_->setHistogram(d->histL);
         // フィルムストリップのサムネイルも更新
-        if (!dragging_ && r.version == version_ && !viewer_->cropMode()) {
-            if (auto* it = film_->currentItem())
-                it->setIcon(QIcon(QPixmap::fromImage(r.after.scaled(240, 180, Qt::KeepAspectRatio, Qt::SmoothTransformation))));
+        if (!dragging_ && r.version == version_ && !viewer_->cropMode() && s_->history.size() > 1) {
+            pendingThumb_ = r.after.scaled(320, 320, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            pendingThumbPath_ = r.path;
+            model_->setThumb(r.path, pendingThumb_);
         }
     }
     if (renderPending_) {
@@ -803,20 +1019,44 @@ void MainWindow::setCompareTarget(std::optional<Params> p, const QString& label)
 
 void MainWindow::saveSidecar() {
     if (!s_ || !s_->src) return;
-    QJsonObject o = s_->sidecar;
+    // ★などはライブラリ側で変わっていることがあるので、ファイルを読み直して params だけ差し替える
+    const QString sp = sidecarPath(s_->path);
+    QJsonObject o;
+    QFile in(sp);
+    if (in.open(QIODevice::ReadOnly)) {
+        o = QJsonDocument::fromJson(in.readAll()).object();
+        in.close();
+    }
     o["version"] = 1;
     o["params"] = s_->params.toJson();
-    const QString sp = sidecarPath(s_->path);
-    QFile f(sp + ".tmp");
+    QSaveFile f(sp);
     if (!f.open(QIODevice::WriteOnly)) {
-        statusBar()->showMessage(QStringLiteral("保存できませんでした：") + sp, 8000);
+        statusBar()->showMessage(QStringLiteral("保存できませんでした：") + QDir::toNativeSeparators(sp), 8000);
         return;
     }
     f.write(QJsonDocument(o).toJson());
-    f.close();
-    QFile::remove(sp);
-    QFile::rename(sp + ".tmp", sp);
+    if (!f.commit()) {
+        statusBar()->showMessage(QStringLiteral("保存できませんでした：") + QDir::toNativeSeparators(sp), 8000);
+        return;
+    }
     s_->sidecar = o;
+    if (PhotoItem* it = model_->item(s_->path)) {
+        if (!it->edited) {
+            it->edited = true;
+            PhotoMark m{it->rating, it->label, it->flag, true};
+            Catalog::get().setMark(s_->path, m);
+            model_->refresh(s_->path);
+        }
+    }
+    storeEditedThumb();
+}
+
+void MainWindow::storeEditedThumb() {
+    if (pendingThumb_.isNull() || pendingThumbPath_.isEmpty()) return;
+    const QString ep = editedThumbPath(pendingThumbPath_);
+    if (!ep.isEmpty()) pendingThumb_.save(ep, "JPG", 85);
+    pendingThumb_ = QImage();
+    pendingThumbPath_.clear();
 }
 
 void MainWindow::flushSave() {
@@ -886,32 +1126,335 @@ void MainWindow::cropTool(bool on) {
     requestRender();
 }
 
-void MainWindow::exportJpeg() {
-    if (!s_ || !s_->src) return;
+// ================================================================ rating
+
+PhotoMark MainWindow::markOf(const QString& path) {
+    if (PhotoItem* it = model_->item(path)) return PhotoMark{it->rating, it->label, it->flag, it->edited};
+    const SidecarMark sm = readSidecarMark(path);
+    if (sm.exists) return sm.mark;
+    if (auto m = Catalog::get().mark(path)) return *m;
+    PhotoMark m;
+    const auto r = xmp::readFileRating(path);
+    m.rating = r.rating.value_or(0);
+    m.label = r.label;
+    return m;
+}
+
+void MainWindow::saveMark(const QString& path, const PhotoMark& m, const PhotoMark& before) {
+    QSettings st;
+    const bool raw = isRawPhoto(path);
+    const bool hasRdev = QFileInfo::exists(sidecarPath(path));
+    // RAW は .rdev（編集していなくても）。JPEG 等は編集済み（.rdev あり）なら .rdev にも
+    if (raw || hasRdev) writeSidecarMark(path, m);
+    if (raw && st.value("rate/xmp_sidecar", false).toBool()) xmp::writeSidecar(path, m.rating, m.label);
+    if (!raw && st.value("rate/write_files", true).toBool() && (m.rating != before.rating || m.label != before.label)) {
+        QString err;
+        if (xmp::writeFileRating(path, m.rating, m.label, &err).isEmpty())
+            statusBar()->showMessage(QStringLiteral("ファイルに書き込めませんでした：") + err, 6000);
+    }
+    Catalog::get().setMark(path, m);
+}
+
+void MainWindow::rate(const std::function<void(PhotoMark&)>& fn, const QString& desc) {
+    const QStringList targets = ratingTargets();
+    if (targets.isEmpty()) return;
+    QStringList linked;
+    struct Change { QString path; PhotoMark m; };
+    std::vector<Change> changes;
+    for (const QString& path : targets) {
+        const PhotoMark before = markOf(path);
+        PhotoMark m = before;
+        fn(m);
+        if (m.rating == before.rating && m.label == before.label && m.flag == before.flag) continue;
+        saveMark(path, m, before);
+        if (PhotoItem* it = model_->item(path)) {
+            it->rating = m.rating;
+            it->label = m.label;
+            it->flag = m.flag;
+            model_->refresh(path);
+        }
+        if (m.rating != before.rating || m.label != before.label) {
+            for (const QString& e : Catalog::get().exportsOf(path))
+                if (QFileInfo::exists(e)) linked << e;
+            changes.push_back({path, m});
+        }
+    }
+    statusBar()->showMessage(QStringLiteral("%1（%2 枚）").arg(desc).arg(targets.size()), 2500);
+    if (!linked.isEmpty()) {
+        const QString pol = QSettings().value("rate/propagate", "ask").toString();
+        bool go = pol == "always";
+        if (pol == "ask") {
+            QMessageBox box(QMessageBox::Question, QStringLiteral("書き出したファイルにも反映"),
+                            QStringLiteral("この写真から書き出したファイルが %1 件あります。★とラベルを反映しますか？").arg(linked.size()),
+                            QMessageBox::Yes | QMessageBox::No, this);
+            auto* always = new QCheckBox(QStringLiteral("次から聞かない"));
+            box.setCheckBox(always);
+            go = box.exec() == QMessageBox::Yes;
+            if (always->isChecked()) QSettings().setValue("rate/propagate", go ? "always" : "never");
+        }
+        if (go) {
+            int ok = 0;
+            for (const auto& c : changes)
+                for (const QString& e : Catalog::get().exportsOf(c.path)) {
+                    if (!QFileInfo::exists(e)) continue;
+                    if (!xmp::writeFileRating(e, c.m.rating, c.m.label).isEmpty()) ++ok;
+                    PhotoMark em = Catalog::get().mark(e).value_or(PhotoMark{});
+                    em.rating = c.m.rating;
+                    em.label = c.m.label;
+                    Catalog::get().setMark(e, em);
+                    if (PhotoItem* it = model_->item(e)) {
+                        it->rating = em.rating;
+                        it->label = em.label;
+                        model_->refresh(e);
+                    }
+                }
+            statusBar()->showMessage(QStringLiteral("書き出したファイル %1 件にも反映しました").arg(ok), 3000);
+        }
+    }
+    if (!currentPath().isEmpty()) showLibInfo(currentPath());
+    if (targets.size() == 1 && QSettings().value("rate/auto_advance", false).toBool()) step(1);
+}
+
+void MainWindow::copyFromOther(const QString& path) {
+    if (!s_ || !s_->src || path == s_->path) return;
+    QFile f(sidecarPath(path));
+    if (!f.open(QIODevice::ReadOnly)) {
+        statusBar()->showMessage(QStringLiteral("その写真はまだ調整されていません"), 3000);
+        return;
+    }
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    if (!o.contains("params")) return;
+    Params p = Params::fromJson(o.value("params").toObject());
+    p.cropX = s_->params.cropX; p.cropY = s_->params.cropY; p.cropW = s_->params.cropW; p.cropH = s_->params.cropH;
+    applyParams(p, true, QStringLiteral("調整をコピー：") + QFileInfo(path).fileName(), true);
+}
+
+void MainWindow::trashRejected() {
+    QStringList rej;
+    for (const auto& it : model_->items())
+        if (it.flag == -1) rej << it.path;
+    if (rej.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("除外した写真はありません"), 3000);
+        return;
+    }
+    if (QMessageBox::question(this, QStringLiteral("ごみ箱へ"),
+                              QStringLiteral("除外した %1 枚をごみ箱へ移動します（調整ファイルも一緒に）。よろしいですか？").arg(rej.size()))
+        != QMessageBox::Yes)
+        return;
+    if (s_ && rej.contains(s_->path)) s_.reset();
+    int n = 0;
+    for (const QString& p : rej) {
+        if (QFile::moveToTrash(p)) ++n;
+        for (const QString& extra : {sidecarPath(p), xmp::sidecarPath(p)})
+            if (QFileInfo::exists(extra)) QFile::moveToTrash(extra);
+    }
+    statusBar()->showMessage(QStringLiteral("%1 枚をごみ箱へ移動しました").arg(n), 4000);
+    openFolder(folder_);
+}
+
+void MainWindow::showLinks() {
+    const QString path = currentPath();
+    if (path.isEmpty()) return;
+    QDialog d(this);
+    d.setWindowTitle(QStringLiteral("書き出したファイル／元の写真"));
+    d.resize(620, 320);
+    auto* v = new QVBoxLayout(&d);
+    auto* list = new QListWidget;
+    const QString src = Catalog::get().sourceOf(path);
+    if (!src.isEmpty()) {
+        v->addWidget(new QLabel(QStringLiteral("このファイルの元の写真")));
+        auto* it = new QListWidgetItem(QDir::toNativeSeparators(src) + (QFileInfo::exists(src) ? "" : QStringLiteral("（見つかりません）")));
+        it->setData(Qt::UserRole, src);
+        list->addItem(it);
+    } else {
+        v->addWidget(new QLabel(QStringLiteral("この写真から書き出したファイル")));
+        for (const QString& e : Catalog::get().exportsOf(path)) {
+            auto* it = new QListWidgetItem(QDir::toNativeSeparators(e) + (QFileInfo::exists(e) ? "" : QStringLiteral("（見つかりません）")));
+            it->setData(Qt::UserRole, e);
+            list->addItem(it);
+        }
+    }
+    v->addWidget(list, 1);
+    auto* row = new QHBoxLayout;
+    auto* open = new QPushButton(QStringLiteral("その場所を開く"));
+    auto* relink = new QPushButton(QStringLiteral("場所を指定し直す…"));
+    auto* unlink = new QPushButton(QStringLiteral("紐付けを外す"));
+    auto* close = new QPushButton(QStringLiteral("閉じる"));
+    row->addWidget(open);
+    row->addWidget(relink);
+    row->addWidget(unlink);
+    row->addStretch(1);
+    row->addWidget(close);
+    v->addLayout(row);
+    auto sel = [list] { return list->currentItem() ? list->currentItem()->data(Qt::UserRole).toString() : QString(); };
+    connect(open, &QPushButton::clicked, &d, [this, sel] {
+        const QString p = sel();
+        if (p.isEmpty() || !QFileInfo::exists(p)) return;
+        openFolder(QFileInfo(p).absolutePath(), p);
+    });
+    connect(relink, &QPushButton::clicked, &d, [this, &d, list, sel, path, src] {
+        const QString old = sel();
+        if (old.isEmpty()) return;
+        const QString nw = QFileDialog::getOpenFileName(&d, QStringLiteral("新しい場所"), QFileInfo(old).absolutePath());
+        if (nw.isEmpty()) return;
+        if (src.isEmpty()) Catalog::get().relink(old, QDir::toNativeSeparators(nw));
+        else { Catalog::get().removeLink(src, path); Catalog::get().addLink(QDir::toNativeSeparators(nw), path); }
+        list->currentItem()->setText(QDir::toNativeSeparators(nw));
+        list->currentItem()->setData(Qt::UserRole, QDir::toNativeSeparators(nw));
+    });
+    connect(unlink, &QPushButton::clicked, &d, [list, sel, path, src] {
+        const QString p = sel();
+        if (p.isEmpty()) return;
+        if (src.isEmpty()) Catalog::get().removeLink(path, p);
+        else Catalog::get().removeLink(src, path);
+        delete list->currentItem();
+    });
+    connect(close, &QPushButton::clicked, &d, &QDialog::accept);
+    d.exec();
+}
+
+void MainWindow::toggleFullscreen() {
+    if (isFullScreen()) {
+        showNormal();
+        menuBar()->show();
+        toolbarWidget_->show();
+        statusBar()->show();
+        filterBar_->show();
+        film_->show();
+    } else {
+        showFullScreen();
+        menuBar()->hide();
+        toolbarWidget_->hide();
+        statusBar()->hide();
+        if (!developMode_) setMode(true);
+        film_->hide();
+    }
+    for (auto* d : docks_) d->setVisible(developMode_ && !isFullScreen());
+}
+
+// ================================================================ export
+
+void MainWindow::exportDialog() {
+    if (exporting_) return;
     flushSave();
-    const QString def = QFileInfo(s_->path).absolutePath() + "/" + QFileInfo(s_->path).completeBaseName() + ".jpg";
-    const QString out = QFileDialog::getSaveFileName(this, QStringLiteral("JPEG で書き出し"), def, "JPEG (*.jpg)");
-    if (out.isEmpty()) return;
-    statusBar()->showMessage(QStringLiteral("書き出し中…"));
-    const Params p = s_->params;
-    const QString path = s_->path;
-    const auto asShot = s_->src->asShotGains;
-    auto full = s_->full;
-    auto lens = s_->lens;
-    QtConcurrent::run([=] {
-        auto f = full ? full : loadAny(path, false);
-        if (!f->error.empty()) return QString::fromStdString(f->error);
-        DevelopOptions o;
-        o.lens = lens.get();
-        const QImage img = toQImage(develop(f->linear, p, asShot, o));
-        QImageWriter w(out, "jpg");
-        w.setQuality(92);
-        return w.write(img) ? QString() : w.errorString();
-    }).then(this, [this, out](const QString& err) {
-        if (err.isEmpty())
-            statusBar()->showMessage(QStringLiteral("書き出しました：") + QDir::toNativeSeparators(out), 6000);
-        else
-            QMessageBox::warning(this, QStringLiteral("書き出し"), QStringLiteral("失敗しました：") + err);
+    const QStringList sel = selectedPaths();
+    const QStringList all = filteredPaths();
+    if (all.isEmpty()) return;
+    ExportDialog dlg(sel.size(), all.size(), this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    const ExportOptions o = dlg.options();
+    QStringList targets;
+    const QString mode = dlg.targetMode();
+    if (mode == "selected") targets = sel;
+    else
+        for (const QString& p : all) {
+            const PhotoMark m = markOf(p);
+            if (mode == "all" || (mode == "star" && m.rating >= dlg.minStar()) || (mode == "pick" && m.flag == 1)) targets << p;
+        }
+    if (targets.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("書き出し"), QStringLiteral("対象の写真がありません。"));
+        return;
+    }
+    if (!o.sameFolder) QDir().mkpath(o.folder);
+
+    struct Job { QString src; PhotoMark mark; };
+    auto jobs = std::make_shared<std::vector<Job>>();
+    for (const QString& p : targets) jobs->push_back({p, markOf(p)});
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    auto* prog = new QProgressDialog(QStringLiteral("書き出し中…"), QStringLiteral("中止"), 0, int(jobs->size()), this);
+    prog->setWindowModality(Qt::WindowModal);
+    prog->setMinimumDuration(0);
+    prog->setValue(0);
+    connect(prog, &QProgressDialog::canceled, this, [cancel] { *cancel = true; });
+    exporting_ = true;
+
+    struct Result { QStringList done, failed; QStringList skipped; };
+    auto watcher = new QFutureWatcher<Result>(this);
+    QPointer<QProgressDialog> pp(prog);
+    auto progress = [this, pp](int i, const QString& name) {
+        QMetaObject::invokeMethod(this, [pp, i, name] {
+            if (pp) {
+                pp->setValue(i);
+                pp->setLabelText(QStringLiteral("書き出し中… ") + name);
+            }
+        });
+    };
+    watcher->setFuture(QtConcurrent::run([jobs, o, cancel, progress] {
+        Result res;
+        int n = 0;
+        for (const Job& j : *jobs) {
+            if (*cancel) break;
+            progress(n, QFileInfo(j.src).fileName());
+            ++n;
+            const QString out = exportPath(j.src, o, n);
+            if (out.isEmpty()) {
+                res.skipped << j.src;
+                continue;
+            }
+            auto f = loadAny(j.src, false);
+            if (!f->error.empty()) {
+                res.failed << QFileInfo(j.src).fileName() + "：" + QString::fromStdString(f->error);
+                continue;
+            }
+            Params p = isRawPhoto(j.src) ? Params::defaults() : Params::defaultsForImage();
+            QFile sf(j.src + ".rdev");
+            if (sf.open(QIODevice::ReadOnly)) {
+                const QJsonObject so = QJsonDocument::fromJson(sf.readAll()).object();
+                if (so.contains("params")) p = Params::fromJson(so.value("params").toObject());
+            }
+            const LensInfo lens = LensDb::get().identify(f->meta);
+            DevelopOptions dop;
+            dop.lens = &lens;
+            const ImageF g = develop(f->linear, p, f->asShotGains, dop);
+            const QString err = writeExport(g, out, o, j.mark.rating, j.mark.label, &f->meta);
+            if (err.isEmpty()) {
+                res.done << out;
+                if (o.addToLibrary) {
+                    Catalog::get().addLink(QDir::toNativeSeparators(j.src), QDir::toNativeSeparators(out));
+                    PhotoMark em = j.mark;
+                    em.flag = 0;
+                    em.edited = false;
+                    Catalog::get().setMark(QDir::toNativeSeparators(out), em);
+                }
+            } else {
+                res.failed << QFileInfo(j.src).fileName() + "：" + err;
+            }
+        }
+        progress(n, QString());
+        return res;
+    }));
+    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, prog, cancel, o] {
+        const Result r = watcher->result();
+        watcher->deleteLater();
+        prog->close();
+        prog->deleteLater();
+        exporting_ = false;
+        QString msg = QStringLiteral("%1 枚を書き出しました。").arg(r.done.size());
+        if (!r.skipped.isEmpty()) msg += QStringLiteral("\n同名ファイルがあったので %1 枚は書き出しませんでした。").arg(r.skipped.size());
+        if (*cancel) msg += QStringLiteral("\n途中で中止しました。");
+        if (!r.failed.isEmpty()) msg += QStringLiteral("\n\n失敗：\n") + r.failed.mid(0, 10).join("\n");
+        // 書き出し数の表示を更新
+        for (int i = 0; i < model_->rowCount(); ++i) {
+            PhotoItem* it = model_->itemAt(i);
+            const int n = Catalog::get().exportsOf(it->path).size();
+            if (n != it->exports) {
+                it->exports = n;
+                model_->refresh(it->path);
+            }
+        }
+        if (qEnvironmentVariableIsSet("RD_TEST_SCRIPT")) {
+            std::printf("export: done %d failed %d skipped %d\n", int(r.done.size()), int(r.failed.size()), int(r.skipped.size()));
+            for (const QString& f : r.failed) std::printf("  fail: %s\n", f.toUtf8().constData());
+            for (const QString& f : r.done) std::printf("  out: %s\n", f.toUtf8().constData());
+            std::fflush(stdout);
+            return;
+        }
+        QMessageBox box(QMessageBox::Information, QStringLiteral("書き出し"), msg, QMessageBox::Ok, this);
+        QPushButton* openBtn = nullptr;
+        if (!r.done.isEmpty()) openBtn = box.addButton(QStringLiteral("書き出し先を開く"), QMessageBox::ActionRole);
+        box.exec();
+        if (openBtn && box.clickedButton() == openBtn)
+            QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(r.done.first()).absolutePath()));
     });
 }
 
@@ -977,6 +1520,48 @@ void MainWindow::runScriptedTest(const QString& prefix) {
         {2500, [=, this] {
              shot(6);
              std::printf("  before roi: %d\n", int(viewer_->hasBeforeRoi()));
+             flushSave();
+             // 評価
+             rate([](PhotoMark& k) { k.rating = 4; }, "test");
+             rate([](PhotoMark& k) { k.label = "red"; k.flag = 1; }, "test");
+             setMode(false);
+         }},
+        {2000, [=, this] {
+             shot(7);
+             const PhotoMark m = markOf(currentPath());
+             const SidecarMark sm = readSidecarMark(currentPath());
+             std::printf("mark: rating %d label %s flag %d edited %d sidecar %d/%s/%d params %d\n", m.rating,
+                         m.label.toUtf8().constData(), m.flag, int(m.edited), sm.mark.rating, sm.mark.label.toUtf8().constData(),
+                         sm.mark.flag, int(s_ && s_->sidecar.contains("params")));
+             std::fflush(stdout);
+             // 書き出し（JPEG・PNG・TIFF）
+             QSettings st;
+             const QString out = QDir::tempPath() + "/rd_export_test";
+             QDir(out).removeRecursively();
+             ExportOptions o;
+             o.folder = out;
+             o.fmt = "jpeg";
+             o.longEdge = 1200;
+             o.addToLibrary = true;
+             st.setValue("rate/propagate", "always");
+             st.setValue("export/last", QJsonDocument(o.toJson()).toJson(QJsonDocument::Compact));
+             QTimer::singleShot(300, this, [this] {
+                 for (auto* w : QApplication::topLevelWidgets())
+                     if (auto* d = qobject_cast<ExportDialog*>(w)) d->accept();
+             });
+             exportDialog();
+         }},
+        {8000, [=, this] {
+             std::printf("exporting %d\n", int(exporting_));
+             rate([](PhotoMark& k) { k.rating = 5; }, "propagate");
+             const QString out = QDir::tempPath() + "/rd_export_test";
+             for (const QFileInfo& fi : QDir(out).entryInfoList(QDir::Files)) {
+                 const auto r = xmp::readFileRating(fi.absoluteFilePath());
+                 std::printf("exported %s: rating %d label %s src %s\n", fi.fileName().toUtf8().constData(), r.rating.value_or(-1),
+                             r.label.toUtf8().constData(), Catalog::get().sourceOf(QDir::toNativeSeparators(fi.absoluteFilePath())).isEmpty() ? "none" : "linked");
+             }
+             std::fflush(stdout);
+             shot(8);
              QApplication::quit();
          }},
     });

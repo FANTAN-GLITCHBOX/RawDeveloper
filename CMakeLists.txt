@@ -10,7 +10,9 @@ if(MSVC)
   add_compile_options(/utf-8 /W3 /permissive-)
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent Sql)
+find_package(TIFF REQUIRED)
+find_package(ZLIB REQUIRED)
 
 # LibRaw：Windows では vcpkg、Linux（開発用）では pkg-config
 find_package(libraw CONFIG QUIET)
@@ -55,6 +57,14 @@ if(WIN32)
   target_compile_definitions(rdengine PUBLIC NOMINMAX)
 endif()
 
+# 評価・カタログ・書き出し（画面に依存しない部分）
+add_library(rdcore STATIC
+  src/core/Xmp.h src/core/Xmp.cpp
+  src/core/Catalog.h src/core/Catalog.cpp
+  src/core/Export.h src/core/Export.cpp
+)
+target_link_libraries(rdcore PUBLIC rdengine Qt6::Gui Qt6::Sql TIFF::TIFF ZLIB::ZLIB)
+
 # アプリ本体
 qt_add_executable(RawDeveloper WIN32
   src/main.cpp
@@ -65,8 +75,9 @@ qt_add_executable(RawDeveloper WIN32
   src/ui/Viewer.h src/ui/Viewer.cpp
   src/ui/DevelopPanel.h src/ui/DevelopPanel.cpp
   src/ui/MainWindow.h src/ui/MainWindow.cpp
+    src/ui/Library.h src/ui/Library.cpp src/ui/Dialogs.h src/ui/Dialogs.cpp
 )
-target_link_libraries(RawDeveloper PRIVATE rdengine Qt6::Widgets Qt6::Concurrent)
+target_link_libraries(RawDeveloper PRIVATE rdcore rdengine Qt6::Widgets Qt6::Concurrent)
 
 install(TARGETS RawDeveloper RUNTIME DESTINATION .)
 
@@ -83,3 +94,8 @@ install(TARGETS rd_selftest RUNTIME DESTINATION .)
 add_executable(rd_develop tests/develop_tool.cpp)
 target_link_libraries(rd_develop PRIVATE rdengine)
 target_compile_definitions(rd_develop PRIVATE LENS_DIR="${CMAKE_SOURCE_DIR}/data/lensfun")
+
+# 評価・書き出しの確認
+add_executable(rd_coretest tests/core_test.cpp)
+target_link_libraries(rd_coretest PRIVATE rdcore)
+install(TARGETS rd_coretest RUNTIME DESTINATION .)
