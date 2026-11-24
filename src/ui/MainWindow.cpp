@@ -126,8 +126,13 @@ MainWindow::MainWindow() {
     connect(&hiresWatcher_, &QFutureWatcher<RenderResult>::finished, this, &MainWindow::hiresDone);
     connect(&roiWatcher_, &QFutureWatcher<RoiResult>::finished, this, [this] {
         const RoiResult r = roiWatcher_.result();
-        if (s_ && s_->path == r.path && !r.img.isNull() && !viewer_->isFit() && !viewer_->cropMode())
+        if (s_ && s_->path == r.path && !r.img.isNull() && !viewer_->isFit() && !viewer_->cropMode()) {
             viewer_->setRoi(r.img, r.rect);
+            if (!r.before.isNull()) {
+                viewer_->setBeforeRoi(r.before, r.rect);
+                roiBeforeKey_ = r.beforeKey;
+            }
+        }
         if (roiPending_) {
             roiPending_ = false;
             requestRoi();
@@ -545,16 +550,8 @@ void MainWindow::requestRender() {
     const QString key = geomKey(p) + (beforeCrop_ ? "bc" : "bn") + (compareTarget_ ? "t" + QString::number(qHash(QJsonDocument(compareTarget_->toJson()).toJson())) : "") +
                         (cropMode ? "c" : "");
     const bool needBefore = key != beforeKey_;
-    Params before = compareTarget_ ? *compareTarget_ : (s_->isRaw ? Params::defaults() : Params::defaultsForImage());
-    if (!compareTarget_) {
-        // 補正前＝撮ったまま。レンズ補正（歪曲・周辺減光・色収差・自動トリミング）は掛けない
-        before.enabled.lens = false;
-    }
-    before.cropX = p.cropX; before.cropY = p.cropY; before.cropW = p.cropW; before.cropH = p.cropH;
-    before.cropAngle = p.cropAngle;
-    before.enabled.crop = p.enabled.crop && beforeCrop_;
+    const Params before = makeBeforeParams(p);
     const bool hasTarget = compareTarget_.has_value();
-    if (!hasTarget) before.sharpenAmount = before.nrColor = 0;
     auto lin = s_->preview;
     const auto asShot = s_->src->asShotGains;
     const float scale = s_->scale;
@@ -704,12 +701,23 @@ void MainWindow::requestRoi() {
     const QString path = s_->path;
     const quint64 ver = version_;
     auto lens = s_->lens;
-    roiWatcher_.setFuture(QtConcurrent::run([full, rLin, vis, scale, p, asShot, path, ver, lens] {
+    // 補正前も見えているなら、同じ範囲をフル解像度で（条件が変わったときだけ計算し直す）
+    const Params before = makeBeforeParams(p);
+    // 切り抜きの有無が補正後と違うと位置が合わないので、そのときは作らない
+    const bool beforeAligned = before.enabled.crop == p.enabled.crop && regionSupported(before);
+    const QString bKey = QString("%1|%2,%3,%4,%5|%6").arg(path).arg(vis.x()).arg(vis.y()).arg(vis.width()).arg(vis.height())
+                             .arg(scale) + QString::fromUtf8(QJsonDocument(before.toJson()).toJson(QJsonDocument::Compact));
+    const bool needBefore = viewer_->showsBefore() && beforeAligned && (bKey != roiBeforeKey_ || !viewer_->hasBeforeRoi());
+    roiWatcher_.setFuture(QtConcurrent::run([full, rLin, vis, scale, p, asShot, path, ver, lens, before, needBefore, bKey] {
         RoiResult r;
         r.path = path;
         r.version = ver;
         r.rect = vis;
         r.img = toQImage(developRegion(full->linear, p, asShot, rLin.x(), rLin.y(), rLin.width(), rLin.height(), scale, lens.get()));
+        if (needBefore) {
+            r.before = toQImage(developRegion(full->linear, before, asShot, rLin.x(), rLin.y(), rLin.width(), rLin.height(), scale, nullptr));
+            r.beforeKey = bKey;
+        }
         return r;
     }));
 }
@@ -764,6 +772,22 @@ void MainWindow::jumpHistory(int i) {
     saveTimer_.start(400);
     requestRender();
     if (!viewer_->isFit()) requestDetailView();
+}
+
+Params MainWindow::makeBeforeParams(const Params& p) const {
+    Params before = compareTarget_ ? *compareTarget_ : (s_ && !s_->isRaw ? Params::defaultsForImage() : Params::defaults());
+    if (!compareTarget_) {
+        // 補正前＝撮ったまま。レンズ補正（歪曲・周辺減光・色収差・自動トリミング）は掛けない
+        before.enabled.lens = false;
+        before.sharpenAmount = before.nrColor = 0;
+    }
+    before.cropX = p.cropX;
+    before.cropY = p.cropY;
+    before.cropW = p.cropW;
+    before.cropH = p.cropH;
+    before.cropAngle = p.cropAngle;
+    before.enabled.crop = p.enabled.crop && beforeCrop_;
+    return before;
 }
 
 void MainWindow::setCompareTarget(std::optional<Params> p, const QString& label) {
@@ -948,6 +972,11 @@ void MainWindow::runScriptedTest(const QString& prefix) {
          }},
         {2500, [=, this] {
              shot(5);
+             viewer_->setCompare(CompareMode::WipeV);
+         }},
+        {2500, [=, this] {
+             shot(6);
+             std::printf("  before roi: %d\n", int(viewer_->hasBeforeRoi()));
              QApplication::quit();
          }},
     });

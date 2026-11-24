@@ -43,7 +43,7 @@ void Viewer::setImage(const QImage& img, QSize fullSize, bool hires) {
     const QSize newFull = fullSize.isValid() ? fullSize : img.size();
     if (newFull != full_) {
         // 切り抜きなどで大きさが変わっても拡大率は保ち、表示位置だけ収める
-        if (!roi_.isNull()) roi_ = QImage();
+        roi_ = roiBefore_ = QImage();
         full_ = newFull;
     }
     img_ = img;
@@ -62,7 +62,7 @@ void Viewer::setImage(const QImage& img, QSize fullSize, bool hires) {
 void Viewer::resetView() {
     fit_ = true;
     offsets_ = {};
-    roi_ = QImage();
+    roi_ = roiBefore_ = QImage();
     zoom_ = fitZoom();
     update();
 }
@@ -70,6 +70,12 @@ void Viewer::resetView() {
 void Viewer::setRoi(const QImage& img, const QRect& rectFull) {
     roi_ = img;
     roiRect_ = rectFull;
+    update();
+}
+
+void Viewer::setBeforeRoi(const QImage& img, const QRect& rectFull) {
+    roiBefore_ = img;
+    roiBeforeRect_ = rectFull;
     update();
 }
 
@@ -159,7 +165,7 @@ void Viewer::setZoom(double z, QPointF anchor, bool fit) {
     zoom_ = z;
     clamp();
     if (!img_.isNull() && zoom_ > displayScaleOfImage() * 1.05) emit wantHiRes();
-    if (fit_) roi_ = QImage();
+    if (fit_) roi_ = roiBefore_ = QImage();
     update();
     emit viewChanged();
 }
@@ -241,6 +247,15 @@ void Viewer::setMaskRange(int lo, int hi) {
 
 // ---------------------------------------------------------------- paint
 
+namespace {
+void drawRoi(QPainter& p, const QRectF& r, QSize full, const QImage& img, const QRect& rect) {
+    if (img.isNull()) return;
+    p.drawImage(QRectF(r.left() + rect.x() * r.width() / full.width(), r.top() + rect.y() * r.height() / full.height(),
+                       rect.width() * r.width() / full.width(), rect.height() * r.height() / full.height()),
+                img);
+}
+}  // namespace
+
 void Viewer::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.fillRect(rect(), QColor(0x19, 0x19, 0x19));
@@ -265,6 +280,7 @@ void Viewer::paintEvent(QPaintEvent*) {
             p.setClipRect(ps[i]);
             const QRectF r = imageRect(ps[i], i);
             p.drawImage(imgs[i] == &before_ ? fitInto(r, before_) : r, *imgs[i]);
+            if (imgs[i] == &before_) drawRoi(p, r, full_, roiBefore_, roiBeforeRect_);
             if (imgs[i] == &img_) {
                 if (!roi_.isNull()) p.drawImage(QRectF(r.left() + roiRect_.x() * r.width() / full_.width(),
                                                        r.top() + roiRect_.y() * r.height() / full_.height(),
@@ -291,6 +307,7 @@ void Viewer::paintEvent(QPaintEvent*) {
         const bool wipe = (compare_ == CompareMode::WipeV || compare_ == CompareMode::WipeH) && !before_.isNull() && !cropMode_;
         if (bypass_ && !before_.isNull() && !cropMode_) {
             p.drawImage(fitInto(r, before_), before_);
+            drawRoi(p, r, full_, roiBefore_, roiBeforeRect_);
             p.setPen(theme::kAccent);
             p.drawText(QRectF(8, 6, 300, 16), Qt::AlignLeft, QStringLiteral("補正前を表示中（Shift+D で戻る）"));
         } else {
@@ -308,6 +325,7 @@ void Viewer::paintEvent(QPaintEvent*) {
                     p.setClipRect(QRectF(r.left(), r.top(), r.width(), r.height() * split_));
                 p.fillRect(r, QColor(0x19, 0x19, 0x19));
                 p.drawImage(fitInto(r, before_), before_);
+                drawRoi(p, r, full_, roiBefore_, roiBeforeRect_);
                 p.restore();
                 p.setPen(QPen(Qt::white, 1.5));
                 p.setFont(small);

@@ -55,6 +55,8 @@ struct RoiResult {
     QString path;
     QImage img;
     QRect rect;
+    QImage before;          // 補正前の同じ範囲（比較表示のときだけ）
+    QString beforeKey;
     quint64 version = 0;
 };
 
@@ -96,6 +98,7 @@ private:
     void step(int d);
     void loadThumbs();
     void setCompareTarget(std::optional<Params> p, const QString& label);
+    Params makeBeforeParams(const Params& p) const;
 
     Viewer* viewer_ = nullptr;
     DevelopPanel* panel_ = nullptr;
@@ -117,6 +120,7 @@ private:
     QFutureWatcher<std::shared_ptr<LoadedRaw>> fullWatcher_;
     QString fullLoadingPath_;
     bool roiPending_ = false;
+    QString roiBeforeKey_;      // 表示中の補正前（部分高精細）の条件
     QTimer viewTimer_;
     bool renderPending_ = false;
     bool dragging_ = false;

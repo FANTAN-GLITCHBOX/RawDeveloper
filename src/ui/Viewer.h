@@ -27,7 +27,8 @@ public:
     void resetView();                                   // 全体表示に戻す（別の写真を開いたとき）
     // 拡大中に、見えている範囲だけフル解像度で重ねて表示する
     void setRoi(const QImage& img, const QRect& rectFull);
-    void clearRoi() { roi_ = QImage(); update(); }
+    void setBeforeRoi(const QImage& img, const QRect& rectFull);  // 補正前の同じ範囲（比較用）
+    void clearRoi() { roi_ = QImage(); roiBefore_ = QImage(); update(); }
     QRect visibleFullRect() const;                      // 補正後の画像で見えている範囲（元画像の画素）
     void setBefore(const QImage& img) { before_ = img; update(); }
     void clear(const QString& message);
@@ -35,7 +36,9 @@ public:
     void setCompare(CompareMode m);
     CompareMode compare() const { return compare_; }
     void setLinked(bool on) { linked_ = on; offsets_[1] = offsets_[0]; update(); }
-    void setBypass(bool on) { bypass_ = on; update(); }
+    void setBypass(bool on) { bypass_ = on; update(); emit viewChanged(); }
+    bool hasBeforeRoi() const { return !roiBefore_.isNull(); }
+    bool showsBefore() const { return bypass_ || compare_ != CompareMode::Off; }
     void setClipOverlay(bool on) { clip_ = on; clipCache_ = QImage(); update(); }
     void setMaskRange(int lo, int hi);
     void setBeforeLabel(const QString& s) { beforeLabel_ = s; update(); }
@@ -86,8 +89,8 @@ private:
     QRectF cropPx(const QRectF& r) const;
     void dragCrop(const QPointF& pos, const QRectF& r);
 
-    QImage img_, before_, mask_, clipCache_, roi_;
-    QRect roiRect_;
+    QImage img_, before_, mask_, clipCache_, roi_, roiBefore_;
+    QRect roiRect_, roiBeforeRect_;
     QSize full_{1, 1};
     bool hires_ = false;
     QString message_, beforeLabel_ = QStringLiteral("補正前");
