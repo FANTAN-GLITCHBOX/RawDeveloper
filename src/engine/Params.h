@@ -39,6 +39,8 @@ struct Params {
     // ディテール
     float sharpenAmount = 40, sharpenRadius = 1.0f, sharpenMasking = 0;
     float nrLuma = 0, nrColor = 25;
+    float nrLumaDetail = 50, nrLumaContrast = 0;   // 輝度：ディテール・コントラスト
+    float nrColorDetail = 50, nrColorSmooth = 50;  // カラー：ディテール・滑らかさ
     // レンズ補正
     bool lensProfile = true;      // プロファイル補正を使う
     QString lensKey;              // 空 = 自動検出、"メーカー|モデル" = 手動選択

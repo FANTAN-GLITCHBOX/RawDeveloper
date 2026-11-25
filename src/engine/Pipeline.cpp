@@ -1,5 +1,10 @@
 #include "engine/Pipeline.h"
 
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <memory>
+#include <mutex>
+
 #include <algorithm>
 #include <cmath>
 
@@ -186,53 +191,9 @@ void gaussianBlur(std::vector<float>& plane, int w, int h, float sigma) {
 
 namespace {
 
-// 輝度のノイズ低減：ガイデッドフィルタ（エッジを保ってなめらかに）
-void guidedSmooth(std::vector<float>& Y, int w, int h, float radius, float eps) {
-    auto boxBlur = [&](std::vector<float>& p) { gaussianBlur(p, w, h, radius); };
-    std::vector<float> mean = Y, sqm(Y.size());
-    for (size_t i = 0; i < Y.size(); ++i) sqm[i] = Y[i] * Y[i];
-    boxBlur(mean);
-    boxBlur(sqm);
-    std::vector<float> a(Y.size()), b(Y.size());
-    for (size_t i = 0; i < Y.size(); ++i) {
-        const float var = std::max(sqm[i] - mean[i] * mean[i], 0.0f);
-        a[i] = var / (var + eps);
-        b[i] = mean[i] - a[i] * mean[i];
-    }
-    boxBlur(a);
-    boxBlur(b);
-    for (size_t i = 0; i < Y.size(); ++i) Y[i] = a[i] * Y[i] + b[i];
-}
-
 void applyDetail(ImageF& g, const Params& p, float scale) {
     const int w = g.width, h = g.height;
     const size_t n = static_cast<size_t>(w) * h;
-    if (p.nrColor > 0 || p.nrLuma > 0) {
-        std::vector<float> Y(n), Cr(n), Cb(n);
-        for (size_t i = 0; i < n; ++i) {
-            const float r = g.data[i * 3], gg = g.data[i * 3 + 1], b = g.data[i * 3 + 2];
-            Y[i] = 0.299f * r + 0.587f * gg + 0.114f * b;
-            Cr[i] = (r - Y[i]) * 0.713f + 0.5f;
-            Cb[i] = (b - Y[i]) * 0.564f + 0.5f;
-        }
-        if (p.nrColor > 0) {
-            const float sig = std::max(0.3f, p.nrColor / 100.0f * 6.0f * scale);
-            gaussianBlur(Cr, w, h, sig);
-            gaussianBlur(Cb, w, h, sig);
-        }
-        if (p.nrLuma > 0) {
-            const float e = p.nrLuma / 100.0f * 0.08f;
-            guidedSmooth(Y, w, h, std::max(0.8f, 2.5f * scale), e * e);
-        }
-        parallelFor(h, [&](int a, int bEnd) {
-            for (size_t i = static_cast<size_t>(a) * w; i < static_cast<size_t>(bEnd) * w; ++i) {
-                const float y = Y[i], cr = Cr[i] - 0.5f, cb = Cb[i] - 0.5f;
-                g.data[i * 3] = y + 1.403f * cr;
-                g.data[i * 3 + 1] = y - 0.714f * cr - 0.344f * cb;
-                g.data[i * 3 + 2] = y + 1.773f * cb;
-            }
-        });
-    }
     const float rad = p.sharpenRadius * scale;
     if (p.sharpenAmount > 0 && rad >= 0.3f) {
         std::vector<float> Y(n);
@@ -333,6 +294,64 @@ std::pair<double, double> rotatedRectMaxArea(double w, double h, double angle) {
     return {(w * ca - h * sa) / cos2a, (h * ca - w * sa) / cos2a};
 }
 
+namespace {
+// 同じ画像のノイズ量・ノイズ低減の結果を覚えておく（プレビューでスライダーを離すたびに作り直さないように）
+std::mutex gNrMutex;
+struct NoiseCache {
+    const float* ptr = nullptr;
+    int w = 0, h = 0;
+    NoiseLevel n;
+};
+NoiseCache gNoise[4];
+int gNoiseNext = 0;
+struct DenoiseCache {
+    const float* ptr = nullptr;
+    int w = 0, h = 0;
+    QByteArray key;
+    std::shared_ptr<const ImageF> img;
+};
+DenoiseCache gDen[2];
+int gDenNext = 0;
+
+QByteArray denoiseKey(const Params& p, bool lens, const NoiseLevel& n) {
+    QJsonObject o;
+    o["nr"] = p.toJson().value("nr");
+    if (lens) o["lens"] = p.toJson().value("lens");
+    o["n"] = QString("%1/%2/%3").arg(n.y).arg(n.c1).arg(n.c2);
+    return QJsonDocument(o).toJson(QJsonDocument::Compact);
+}
+
+std::shared_ptr<const ImageF> cachedDenoise(const ImageF& src, const ImageF& lensed, const Params& p, bool lens,
+                                            const NoiseLevel* given) {
+    const NoiseLevel n = given ? *given : noiseOf(src);
+    const QByteArray key = denoiseKey(p, lens, n);
+    {
+        std::lock_guard<std::mutex> lk(gNrMutex);
+        for (auto& c : gDen)
+            if (c.ptr == src.data.data() && c.w == src.width && c.h == src.height && c.key == key) return c.img;
+    }
+    auto out = std::make_shared<ImageF>(lensed);
+    denoise(*out, p, n);
+    std::lock_guard<std::mutex> lk(gNrMutex);
+    gDen[gDenNext] = {src.data.data(), src.width, src.height, key, out};
+    gDenNext = (gDenNext + 1) % 2;
+    return out;
+}
+}  // namespace
+
+NoiseLevel noiseOf(const ImageF& img) {
+    {
+        std::lock_guard<std::mutex> lk(gNrMutex);
+        for (auto& c : gNoise)
+            if (c.ptr == img.data.data() && c.w == img.width && c.h == img.height) return c.n;
+    }
+    const NoiseLevel n = estimateNoise(img);
+    std::lock_guard<std::mutex> lk(gNrMutex);
+    gNoise[gNoiseNext] = {img.data.data(), img.width, img.height, n};
+    gNoiseNext = (gNoiseNext + 1) % 4;
+    return n;
+}
+
 ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>& asShot, const DevelopOptions& o) {
     // レンズ補正（リニアのまま、座標の付け替えと周辺減光）
     ImageF lensed;
@@ -342,7 +361,14 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
         static const LensInfo none;
         lensed = lensRemapRegion(linIn, p, o.lens ? *o.lens : none, 0, 0, linIn.width, linIn.height);
     }
-    const ImageF& lin = useLens ? lensed : linIn;
+    const ImageF* linp = useLens ? &lensed : &linIn;
+    // ノイズ低減（トーン調整の前に。リニアの √ 空間で）
+    std::shared_ptr<const ImageF> denoised;
+    if (o.detail && denoiseActive(p)) {
+        denoised = cachedDenoise(linIn, *linp, p, useLens, o.noise);
+        linp = denoised.get();
+    }
+    const ImageF& lin = *linp;
     const int w = lin.width, h = lin.height;
     ImageF g;
     g.resize(w, h);
@@ -473,8 +499,7 @@ ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<floa
     float rad = 0;
     if (pIn.enabled.detail) {
         rad = std::max(rad, pIn.sharpenRadius * 4 + 2);
-        rad = std::max(rad, std::max(0.3f, pIn.nrColor / 100.0f * 6.0f) * 4 + 2);
-        if (pIn.nrLuma > 0) rad = std::max(rad, 2.5f * 4 * 3 + 2);
+        rad = std::max(rad, float(denoiseMargin(pIn)));
     }
     const int m = static_cast<int>(std::ceil(rad));
     const int x0 = std::clamp(ox + rx - m, 0, W), y0 = std::clamp(oy + ry - m, 0, H);
@@ -501,6 +526,16 @@ ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<floa
         sub = downscale(sub, edge);
         k = static_cast<double>(sub.width) / (x1 - x0);
         o.scale = static_cast<float>(k);
+    }
+    // ノイズ量は部分ではなく画像全体で測る（場所によって効き方が変わらないように）
+    NoiseLevel nl;
+    if (denoiseActive(p)) {
+        nl = noiseOf(lin);
+        const float kk = static_cast<float>(k);
+        nl.y *= kk;
+        nl.c1 *= kk;
+        nl.c2 *= kk;
+        o.noise = &nl;
     }
     const ImageF g = develop(sub, p, asShot, o);
     const int cx = static_cast<int>(std::lround((std::clamp(ox + rx, x0, x1) - x0) * k));

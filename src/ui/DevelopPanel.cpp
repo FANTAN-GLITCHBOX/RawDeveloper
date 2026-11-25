@@ -187,8 +187,13 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
     row(detail, "sharpen.amount", QStringLiteral("シャープ 量"), 0, 150, 40, 0, 1);
     row(detail, "sharpen.radius", QStringLiteral("半径"), 0.5, 3.0, 1.0, 1, 0.1);
     row(detail, "sharpen.masking", QStringLiteral("マスク"), 0, 100, 0, 0, 1);
-    row(detail, "nr.luma", QStringLiteral("ノイズ 輝度"), 0, 100, 0, 0, 1);
-    row(detail, "nr.color", QStringLiteral("ノイズ カラー"), 0, 100, 25, 0, 1);
+    detail->add(hint(QStringLiteral("ノイズ軽減")));
+    row(detail, "nr.luma", QStringLiteral("輝度"), 0, 100, 0, 0, 1);
+    row(detail, "nr.luma_detail", QStringLiteral("　ディテール"), 0, 100, 50, 0, 1);
+    row(detail, "nr.luma_contrast", QStringLiteral("　コントラスト"), 0, 100, 0, 0, 1);
+    row(detail, "nr.color", QStringLiteral("カラー"), 0, 100, 25, 0, 1);
+    row(detail, "nr.color_detail", QStringLiteral("　ディテール"), 0, 100, 50, 0, 1);
+    row(detail, "nr.color_smooth", QStringLiteral("　滑らかさ"), 0, 100, 50, 0, 1);
     detail->add(hint(QStringLiteral("シャープ・ノイズ低減は、ズームしたときの高精細表示で確認してください")));
     addSection(detail, Panel::Detail);
 
@@ -371,6 +376,10 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
     rows_["sharpen.masking"]->setValue(p_.sharpenMasking);
     rows_["nr.luma"]->setValue(p_.nrLuma);
     rows_["nr.color"]->setValue(p_.nrColor);
+    rows_["nr.luma_detail"]->setValue(p_.nrLumaDetail);
+    rows_["nr.luma_contrast"]->setValue(p_.nrLumaContrast);
+    rows_["nr.color_detail"]->setValue(p_.nrColorDetail);
+    rows_["nr.color_smooth"]->setValue(p_.nrColorSmooth);
     rows_["crop.angle"]->setValue(p_.cropAngle);
     rows_["lens.distortion"]->setValue(p_.lensDistortion);
     rows_["lens.vignetting"]->setValue(p_.lensVignetting);
@@ -405,7 +414,9 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
                                               {"vibrance", "自然な彩度"}, {"saturation", "彩度"},
                                               {"sharpen.amount", "シャープ"}, {"sharpen.radius", "シャープ半径"},
                                               {"sharpen.masking", "シャープのマスク"}, {"nr.luma", "輝度ノイズ"},
-                                              {"nr.color", "カラーノイズ"}, {"crop.angle", "角度"},
+                                              {"nr.color", "カラーノイズ"}, {"nr.luma_detail", "輝度ノイズのディテール"},
+                                              {"nr.luma_contrast", "輝度ノイズのコントラスト"}, {"nr.color_detail", "カラーノイズのディテール"},
+                                              {"nr.color_smooth", "カラーノイズの滑らかさ"}, {"crop.angle", "角度"},
                                               {"lens.distortion", "歪曲（プロファイル）"}, {"lens.vignetting", "周辺光量（プロファイル）"},
                                               {"lens.manual_distortion", "歪曲（手動）"}, {"lens.manual_vignetting", "周辺光量（手動）"}};
     if (key == "temp" || key == "tint") {
@@ -434,6 +445,10 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
     else if (key == "sharpen.masking") p_.sharpenMasking = f;
     else if (key == "nr.luma") p_.nrLuma = f;
     else if (key == "nr.color") p_.nrColor = f;
+    else if (key == "nr.luma_detail") p_.nrLumaDetail = f;
+    else if (key == "nr.luma_contrast") p_.nrLumaContrast = f;
+    else if (key == "nr.color_detail") p_.nrColorDetail = f;
+    else if (key == "nr.color_smooth") p_.nrColorSmooth = f;
     else if (key == "crop.angle") p_.cropAngle = f;
     else if (key == "lens.distortion") p_.lensDistortion = f;
     else if (key == "lens.vignetting") p_.lensVignetting = f;

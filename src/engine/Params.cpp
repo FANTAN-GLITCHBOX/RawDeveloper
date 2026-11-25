@@ -74,7 +74,9 @@ QJsonObject Params::toJson() const {
     o["wheels"] = QJsonObject{{"lift", toArr(lift.data(), 3)}, {"gamma", toArr(gamma.data(), 3)},
                               {"gain", toArr(gain.data(), 3)}, {"offset", toArr(offset.data(), 3)}};
     o["sharpen"] = QJsonObject{{"amount", sharpenAmount}, {"radius", sharpenRadius}, {"masking", sharpenMasking}};
-    o["nr"] = QJsonObject{{"luma", nrLuma}, {"color", nrColor}};
+    o["nr"] = QJsonObject{{"luma", nrLuma},           {"color", nrColor},
+                          {"luma_detail", nrLumaDetail}, {"luma_contrast", nrLumaContrast},
+                          {"color_detail", nrColorDetail}, {"color_smooth", nrColorSmooth}};
     o["lens"] = QJsonObject{{"profile", lensProfile},
                             {"lens", lensKey.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(lensKey)},
                             {"distortion", lensDistortion},
@@ -130,6 +132,10 @@ Params Params::fromJson(const QJsonObject& o) {
     const QJsonObject nr = o.value("nr").toObject();
     p.nrLuma = num(nr, "luma", 0);
     p.nrColor = num(nr, "color", 25);
+    p.nrLumaDetail = num(nr, "luma_detail", 50);
+    p.nrLumaContrast = num(nr, "luma_contrast", 0);
+    p.nrColorDetail = num(nr, "color_detail", 50);
+    p.nrColorSmooth = num(nr, "color_smooth", 50);
     const QJsonObject ln = o.value("lens").toObject();
     p.lensProfile = ln.value("profile").toBool(true);
     p.lensKey = ln.value("lens").isString() ? ln.value("lens").toString() : QString();
@@ -179,6 +185,10 @@ void resetPanel(Params& p, Panel panel) {
             p.sharpenMasking = d.sharpenMasking;
             p.nrLuma = d.nrLuma;
             p.nrColor = d.nrColor;
+            p.nrLumaDetail = d.nrLumaDetail;
+            p.nrLumaContrast = d.nrLumaContrast;
+            p.nrColorDetail = d.nrColorDetail;
+            p.nrColorSmooth = d.nrColorSmooth;
             break;
         case Panel::Lens: {
             const bool prof = p.lensProfile;

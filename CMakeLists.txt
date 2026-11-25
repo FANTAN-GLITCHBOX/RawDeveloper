@@ -47,6 +47,7 @@ add_library(rdengine STATIC
   src/engine/Color.h src/engine/Color.cpp
   src/engine/Params.h src/engine/Params.cpp
   src/engine/Pipeline.h src/engine/Pipeline.cpp
+    src/engine/Denoise.h src/engine/Denoise.cpp
   src/engine/Auto.h src/engine/Auto.cpp
   src/engine/Lens.h src/engine/Lens.cpp
   src/engine/RawLoader.h src/engine/RawLoader.cpp
@@ -94,6 +95,9 @@ install(TARGETS rd_selftest RUNTIME DESTINATION .)
 # Python 版との一致確認用：リニア画像(.f32)＋パラメータ(JSON) → 現像結果(.f32)
 add_executable(rd_auto tests/auto_tool.cpp)
 target_link_libraries(rd_auto PRIVATE rdcore)
+
+add_executable(rd_nr tests/nr_tool.cpp)
+target_link_libraries(rd_nr PRIVATE rdcore)
 
 add_executable(rd_develop tests/develop_tool.cpp)
 target_link_libraries(rd_develop PRIVATE rdengine)

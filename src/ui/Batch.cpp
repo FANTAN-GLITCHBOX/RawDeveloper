@@ -123,7 +123,7 @@ Params readParams(const QString& path, bool* exists) {
         }
     }
     if (exists) *exists = false;
-    return isRawPhoto(path) ? Params::defaults() : Params::defaultsForImage();
+    return isRawPhoto(path) ? Params::defaults() : Params::defaultsForImage();  // 輝度ノイズの ISO 初期値は開いたときに
 }
 
 bool writeParams(const QString& path, const Params& p) {

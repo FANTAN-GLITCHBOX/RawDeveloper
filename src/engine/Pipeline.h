@@ -7,6 +7,7 @@
 
 #include "engine/Image.h"
 #include "engine/Lens.h"
+#include "engine/Denoise.h"
 #include "engine/Params.h"
 
 namespace rd {
@@ -27,7 +28,11 @@ struct DevelopOptions {
     bool detail = true;    // false：ノイズ低減・シャープを省略（スライダー操作中）
     bool doCrop = true;    // false：回転のみ（切り抜きツール表示用）
     const LensInfo* lens = nullptr;  // レンズ補正用（なければ手動補正のみ）
+    const NoiseLevel* noise = nullptr;  // この画像の解像度でのノイズ量（なければ画像から測る）
 };
+
+// 画像のノイズ量（同じ画像なら測った結果を使い回す）
+NoiseLevel noiseOf(const ImageF& img);
 
 // リニア画像を現像し、ガンマ 0..1 の RGB を返す
 ImageF develop(const ImageF& lin, const Params& p, const std::array<float, 3>& asShot, const DevelopOptions& o);

@@ -824,8 +824,10 @@ void MainWindow::loaded() {
     }
     if (s_->sidecar.contains("params"))
         s_->params = Params::fromJson(s_->sidecar.value("params").toObject());
-    else
+    else {
         s_->params = s_->isRaw ? Params::defaults() : Params::defaultsForImage();
+        if (s_->isRaw) s_->params.nrLuma = defaultLumaNr(src->meta.iso);  // 高感度ほど輝度ノイズ軽減を強めに
+    }
     s_->history = {{QStringLiteral("読み込み"), s_->params}};
     s_->historyPos = 0;
     refreshHistory();
@@ -1674,8 +1676,9 @@ void MainWindow::runBatch(std::vector<BatchJob> jobs, const QString& title, bool
             BatchDone d;
             d.path = j.path;
             bool ex = false;
-            const Params cur = readParams(j.path, &ex);
+            Params cur = readParams(j.path, &ex);
             auto src = loadPhoto(j.path, true);
+            if (!ex && isRawPhoto(j.path) && src->error.empty()) cur.nrLuma = defaultLumaNr(src->meta.iso);
             Params np = cur;
             if (src->error.empty()) np = jobResult(j, cur, *src);
             if (j.mode != BatchJob::Thumb) d.ok = writeParams(j.path, np);
@@ -1815,6 +1818,7 @@ void MainWindow::exportDialog() {
                 continue;
             }
             Params p = isRawPhoto(j.src) ? Params::defaults() : Params::defaultsForImage();
+            if (isRawPhoto(j.src)) p.nrLuma = defaultLumaNr(f->meta.iso);
             QFile sf(j.src + ".rdev");
             if (sf.open(QIODevice::ReadOnly)) {
                 const QJsonObject so = QJsonDocument::fromJson(sf.readAll()).object();
