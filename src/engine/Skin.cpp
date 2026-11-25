@@ -7,6 +7,7 @@
 #include "engine/Color.h"
 #include "engine/Parallel.h"
 #include "engine/Pipeline.h"
+#include "facedetectcnn.h"
 
 namespace rd {
 
@@ -101,7 +102,61 @@ void skinMaskOverlay(ImageF& g, const Params& p) {
     }
 }
 
+std::vector<FaceBox> detectFaces(const ImageF& display) {
+    std::vector<FaceBox> out;
+    const ImageF small = downscale(display, 1024);
+    const int w = small.width, h = small.height;
+    if (w < 32 || h < 32) return out;
+    std::vector<unsigned char> bgr(size_t(w) * h * 3);
+    for (size_t i = 0; i < size_t(w) * h; ++i)
+        for (int c = 0; c < 3; ++c)
+            bgr[i * 3 + (2 - c)] = static_cast<unsigned char>(std::clamp(small.data[i * 3 + c], 0.0f, 1.0f) * 255 + 0.5f);
+    std::vector<unsigned char> buf(FACEDETECTION_RESULT_BUFFER_SIZE);
+    int* res = facedetect_cnn(buf.data(), bgr.data(), w, h, w * 3);
+    if (!res) return out;
+    for (int i = 0; i < *res; ++i) {
+        const short* q = reinterpret_cast<const short*>(res + 1) + FACEDETECTION_RESULT_STRIDE_SHORTS * i;
+        if (q[0] < 60) continue;  // 自信の低いものは使わない
+        out.push_back({float(q[1]) / w, float(q[2]) / h, float(q[3]) / w, float(q[4]) / h, float(q[0])});
+    }
+    return out;
+}
+
 SkinStats analyzeSkin(const ImageF& d) {
+    // 顔が見つかれば、顔の中央（目より下・口より上あたり）の肌の色を代表にする。服や木の色に引っ張られない
+    {
+        const auto faces = detectFaces(d);
+        std::vector<float> hs, ss, vs;
+        for (const auto& f : faces) {
+            const int x0 = int((f.x + f.w * 0.2f) * d.width), x1 = int((f.x + f.w * 0.8f) * d.width);
+            const int y0 = int((f.y + f.h * 0.35f) * d.height), y1 = int((f.y + f.h * 0.75f) * d.height);
+            for (int y = std::max(0, y0); y < std::min(d.height, y1); ++y)
+                for (int x = std::max(0, x0); x < std::min(d.width, x1); ++x) {
+                    const float* c = d.px(x, y);
+                    float hh, s2, v;
+                    rgbToHsv(std::clamp(c[0], 0.f, 1.f), std::clamp(c[1], 0.f, 1.f), std::clamp(c[2], 0.f, 1.f), hh, s2, v);
+                    if (hh > 180) hh -= 360;
+                    // 目・眉・唇・マスク・メガネの反射などを外す
+                    if (hh < -15 || hh > 45 || s2 < 0.08f || v < 0.2f || v > 0.98f) continue;
+                    hs.push_back(hh);
+                    ss.push_back(s2);
+                    vs.push_back(v);
+                }
+        }
+        if (hs.size() >= 30) {
+            auto med = [](std::vector<float>& v) {
+                std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+                return v[v.size() / 2];
+            };
+            SkinStats st;
+            st.faces = int(faces.size());
+            st.hue = std::fmod(med(hs) + 360.0f, 360.0f);
+            st.sat = med(ss);
+            st.val = med(vs);
+            st.fraction = float(hs.size()) / (size_t(d.width) * d.height);
+            return st;
+        }
+    }
     // 1) 肌らしい色を YCbCr の定番の範囲で拾う  2) 色相×彩度の分布でいちばん多い所を肌の色とする
     //    （木・壁など、肌に近い色が広く写っていても、人の肌のまとまりを選びやすい）
     SkinStats st;
@@ -168,12 +223,14 @@ Params skinAuto(const Params& base, const SkinStats& st, int level) {
     p.skinCenterSat = std::round(st.sat * 100) / 100;
     p.skinRange = 50;
     // 色相：スキントーンラインへ（−＝赤み、＋＝黄み）
-    const float dh = hueDiff(kSkinLineHue, st.hue);
-    // 色だけで肌を推定しているので（服・木などを選んでいることもある）、動かしすぎない
-    p.skinHue = std::round(std::clamp(dh / 0.15f * 0.5f * k, -25.0f, 25.0f));
+    const float dh = hueDiff(kSkinLineHue + 2.0f, st.hue);  // ライン上より少しだけ黄み寄りが自然に見える
+    // 顔から測れたときはしっかり、色だけで推定したとき（服・木などを選んでいることもある）は控えめに
+    const bool face = st.faces > 0;
+    const float cap = face ? 35.0f : 25.0f;
+    p.skinHue = std::round(std::clamp(dh / 0.15f * 0.5f * k, -cap, cap));
     // 彩度：派手すぎ・くすみすぎを目安の 0.38 付近へ（控えめに）
     const float ds = (0.38f / std::max(st.sat, 0.05f) - 1.0f) * 100.0f;
-    p.skinSat = std::round(std::clamp(ds * 0.4f * k, -25.0f, 15.0f));
+    p.skinSat = std::round(face ? std::clamp(ds * 0.6f * k, -35.0f, 20.0f) : std::clamp(ds * 0.4f * k, -25.0f, 15.0f));
     p.skinLum = std::round(std::clamp((0.72f - st.val) * 60.0f * k, -10.0f, 15.0f));
     p.skinUniHue = std::round(std::clamp(35.0f * k, 0.0f, 80.0f));
     p.skinUniSat = std::round(std::clamp(25.0f * k, 0.0f, 70.0f));

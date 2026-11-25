@@ -410,7 +410,9 @@ void MainWindow::buildUi() {
         static const char* names[] = {"", "弱め", "普通", "強め"};
         Params p = skinAuto(s_->params, st, level);
         applyParams(p, true, QStringLiteral("肌色：いい感じに（%1）").arg(QString::fromUtf8(names[level])), true);
-        statusBar()->showMessage(QStringLiteral("肌色を整えました。違う所が選ばれていたら「肌をクリックして指定」で直せます"), 6000);
+        statusBar()->showMessage(st.faces > 0 ? QStringLiteral("顔 %1 人の肌から色を測って整えました").arg(st.faces)
+                                              : QStringLiteral("顔が見つからなかったので、色だけで肌を推定しました。違う所が選ばれていたら「肌をクリックして指定」で直せます"),
+                                 7000);
     });
     connect(viewer_, &Viewer::probe, scopes_, &ScopesPanel::setProbe);
     connect(viewer_, &Viewer::wantHiRes, this, &MainWindow::requestDetailView);

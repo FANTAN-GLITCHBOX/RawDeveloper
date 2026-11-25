@@ -3,6 +3,8 @@
 #include "engine/Image.h"
 #include "engine/Params.h"
 
+#include <vector>
+
 namespace rd {
 
 constexpr float kSkinLineHue = 18.0f;  // ベクトルスコープのスキントーンライン（123°）付近の色相（HSV）
@@ -18,10 +20,17 @@ int skinMargin(const Params& p);
 // 肌の範囲を表示（オレンジで塗る）
 void skinMaskOverlay(ImageF& g, const Params& p);
 
-// 表示用 RGB から肌らしい部分を探して代表色を測る
+// 顔の位置（0..1 の座標）。顔検出は手元だけで行い、画像はどこにも送らない
+struct FaceBox {
+    float x, y, w, h, confidence;
+};
+std::vector<FaceBox> detectFaces(const ImageF& display);
+
+// 表示用 RGB から肌らしい部分を探して代表色を測る（顔が見つかれば顔の肌から）
 struct SkinStats {
     float fraction = 0;  // 肌と思われる画素の割合
-    float hue = 0, sat = 0, val = 0;  // 中央値
+    float hue = 0, sat = 0, val = 0;  // 代表値
+    int faces = 0;       // 見つかった顔の数（0 なら色だけで推定）
 };
 SkinStats analyzeSkin(const ImageF& display);
 

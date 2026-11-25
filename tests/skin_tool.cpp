@@ -5,6 +5,7 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QPainter>
+#include <chrono>
 #include <cstdio>
 
 #include "core/CameraRef.h"
@@ -35,7 +36,7 @@ int main(int argc, char** argv) {
         rd::DevelopOptions o;
         o.scale = float(prev.width) / raw.linear.width;
         const rd::ImageF g0 = rd::develop(prev, a, raw.asShotGains, o);
-        const rd::SkinStats st = rd::analyzeSkin(rd::downscale(g0, 400));
+        auto t0 = std::chrono::steady_clock::now(); const rd::SkinStats st = rd::analyzeSkin(g0); std::printf("analyze %.0f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         rd::Params s = rd::skinAuto(a, st, 2);
         const rd::ImageF g1 = rd::develop(prev, s, raw.asShotGains, o);
         rd::Params m = s;
@@ -47,11 +48,14 @@ int main(int argc, char** argv) {
         p.drawImage(0, 30, toQ(g0));
         p.drawImage(g0.width, 30, toQ(g1));
         p.drawImage(g0.width * 2, 30, toQ(g2));
+        p.setPen(QPen(Qt::green, 2));
+        for (const auto& fb : rd::detectFaces(g0))
+            p.drawRect(QRectF(fb.x * g0.width, 30 + fb.y * g0.height, fb.w * g0.width, fb.h * g0.height));
         p.setPen(Qt::white);
-        const QString line = QString("%1 skin %2% hue %3 sat %4 val %5 -> hue %6 sat %7 lum %8 uni %9/%10/%11")
+        const QString line = QString("faces %12 | %1 skin %2% hue %3 sat %4 val %5 -> hue %6 sat %7 lum %8 uni %9/%10/%11")
                                  .arg(QFileInfo(argv[i]).fileName()).arg(st.fraction * 100, 0, 'f', 1).arg(st.hue, 0, 'f', 1)
                                  .arg(st.sat, 0, 'f', 2).arg(st.val, 0, 'f', 2).arg(s.skinHue).arg(s.skinSat).arg(s.skinLum)
-                                 .arg(s.skinUniHue).arg(s.skinUniSat).arg(s.skinUniLum);
+                                 .arg(s.skinUniHue).arg(s.skinUniSat).arg(s.skinUniLum).arg(st.faces);
         p.drawText(6, 20, line);
         p.end();
         sheet.save(QString(argv[1]) + "/" + QFileInfo(argv[i]).completeBaseName() + ".jpg", "JPG", 88);

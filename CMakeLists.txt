@@ -41,6 +41,18 @@ else()
 endif()
 
 # 現像エンジン（画面に依存しない部分）
+# 顔検出（肌色の自動調整用）。libfacedetection、BSD-3
+add_library(facedetect STATIC
+    third_party/libfacedetection/facedetectcnn.cpp
+    third_party/libfacedetection/facedetectcnn-model.cpp
+    third_party/libfacedetection/facedetectcnn-data.cpp)
+target_include_directories(facedetect PUBLIC third_party/libfacedetection)
+if(MSVC)
+    target_compile_options(facedetect PRIVATE /O2 /wd4244 /wd4267 /wd4305)
+else()
+    target_compile_options(facedetect PRIVATE -O3 -w)
+endif()
+
 add_library(rdengine STATIC
   src/engine/Image.h
   src/engine/Parallel.h
@@ -54,7 +66,7 @@ add_library(rdengine STATIC
   src/engine/RawLoader.h src/engine/RawLoader.cpp
 )
 target_include_directories(rdengine PUBLIC src)
-target_link_libraries(rdengine PUBLIC ${LIBRAW_TARGET} ${LENSFUN_TARGET} Qt6::Core)
+target_link_libraries(rdengine PUBLIC ${LIBRAW_TARGET} ${LENSFUN_TARGET} Qt6::Core PRIVATE facedetect)
 if(WIN32)
   target_compile_definitions(rdengine PUBLIC NOMINMAX)
 endif()
