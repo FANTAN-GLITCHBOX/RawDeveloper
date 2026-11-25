@@ -350,6 +350,12 @@ void Viewer::paintEvent(QPaintEvent*) {
             }
         }
         if (cropMode_) drawCrop(p, r);
+        if (overlay_ && !cropMode_ && !bypass_) {
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, true);
+            overlay_(p, r);
+            p.restore();
+        }
     }
     p.setFont(small);
     p.setPen(theme::kTextDim);
@@ -466,6 +472,11 @@ void Viewer::mousePressEvent(QMouseEvent* e) {
         return;
     }
     if (e->button() != Qt::LeftButton || img_.isNull()) return;
+    if (toolMode_ && !picking_ && !cropMode_ && !sideBySide()) {
+        toolDown_ = true;
+        emit toolPress(toolN(pos), e->modifiers());
+        return;
+    }
     if (picking_ && r.contains(pos)) {
         emit picked(int((pos.x() - r.left()) / r.width() * img_.width()), int((pos.y() - r.top()) / r.height() * img_.height()));
         return;
@@ -515,6 +526,11 @@ void Viewer::mouseMoveEvent(QMouseEvent* e) {
         emit viewChanged();
         return;
     }
+    if (toolMode_ && !cropMode_ && !sideBySide()) {
+        emit toolMove(toolN(pos), toolDown_, e->modifiers());
+        update();
+        if (toolDown_) return;
+    }
     if (splitDrag_) {
         split_ = compare_ == CompareMode::WipeV ? std::clamp((pos.x() - r.left()) / std::max(1.0, r.width()), 0.0, 1.0)
                                                 : std::clamp((pos.y() - r.top()) / std::max(1.0, r.height()), 0.0, 1.0);
@@ -551,7 +567,26 @@ void Viewer::mouseMoveEvent(QMouseEvent* e) {
     emit probe(std::nullopt);
 }
 
-void Viewer::mouseReleaseEvent(QMouseEvent*) {
+QRectF Viewer::imageRectNow() const { return imageRect(panes()[0], 0); }
+
+QPointF Viewer::toolN(const QPointF& pos) const {
+    const QRectF r = imageRect(panes()[0], 0);
+    return QPointF((pos.x() - r.left()) / std::max(1.0, r.width()), (pos.y() - r.top()) / std::max(1.0, r.height()));
+}
+
+void Viewer::setToolMode(bool on) {
+    toolMode_ = on;
+    toolDown_ = false;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void Viewer::mouseReleaseEvent(QMouseEvent* e) {
+    if (toolDown_) {
+        toolDown_ = false;
+        emit toolRelease(toolN(e->position()));
+        return;
+    }
     if (panPane_ >= 0) {
         panPane_ = -1;
         setCursor(space_ ? Qt::OpenHandCursor : (picking_ ? Qt::CrossCursor : Qt::ArrowCursor));

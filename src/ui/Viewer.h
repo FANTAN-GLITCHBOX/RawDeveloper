@@ -7,6 +7,7 @@
 //  切り抜きツール：枠のドラッグ、比率固定、三分割ガイド
 #include <QImage>
 #include <QWidget>
+#include <functional>
 #include <array>
 #include <optional>
 
@@ -58,6 +59,12 @@ public:
     // 角度をキーで調整している間の表示（細かいグリッドと角度の数字）。text が空なら消す
     void setAngleHint(const QString& text) { angleHint_ = text; update(); }
     QString angleHint() const { return angleHint_; }  // 0 = 自由（幅/高さ）
+    // 部分補正などの道具：左ボタンの操作を toolPress/Move/Release で渡す（座標は表示画像の 0..1）
+    void setToolMode(bool on);
+    bool toolMode() const { return toolMode_; }
+    // 画像の上に描く（r は表示画像の矩形）
+    void setOverlay(std::function<void(QPainter&, const QRectF&)> f) { overlay_ = std::move(f); update(); }
+    QRectF imageRectNow() const;  // いま表示している画像の矩形（1 画面のとき）
 
 signals:
     void probe(std::optional<std::array<int, 3>> rgb);
@@ -65,6 +72,9 @@ signals:
     void picked(int x, int y);              // 表示画像上の画素（WB スポイト）
     void cropChanged(const rd::CropRect& r, bool final);
     void viewChanged();                                 // ズーム・移動・比較方法が変わった
+    void toolPress(QPointF n, Qt::KeyboardModifiers mods);
+    void toolMove(QPointF n, bool pressed, Qt::KeyboardModifiers mods);
+    void toolRelease(QPointF n);
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -115,6 +125,10 @@ private:
     QString cropHandle_;
     QPointF cropP0_;
     double aspect_ = 0;
+    // 道具
+    bool toolMode_ = false, toolDown_ = false;
+    std::function<void(QPainter&, const QRectF&)> overlay_;
+    QPointF toolN(const QPointF& pos) const;
 };
 
 }  // namespace rd

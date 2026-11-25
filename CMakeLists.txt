@@ -62,6 +62,7 @@ add_library(rdengine STATIC
     src/engine/Denoise.h src/engine/Denoise.cpp
     src/engine/Skin.h src/engine/Skin.cpp
     src/engine/Profile.h src/engine/Profile.cpp
+    src/engine/Local.h src/engine/Local.cpp
   src/engine/Auto.h src/engine/Auto.cpp
   src/engine/Lens.h src/engine/Lens.cpp
   src/engine/RawLoader.h src/engine/RawLoader.cpp
@@ -91,6 +92,7 @@ qt_add_executable(RawDeveloper WIN32
   src/ui/Viewer.h src/ui/Viewer.cpp
   src/ui/DevelopPanel.h src/ui/DevelopPanel.cpp
   src/ui/MainWindow.h src/ui/MainWindow.cpp
+    src/ui/MainWindowLocal.cpp
     src/ui/Library.h src/ui/Library.cpp src/ui/Dialogs.h src/ui/Dialogs.cpp src/ui/Batch.h src/ui/Batch.cpp
 )
 target_link_libraries(RawDeveloper PRIVATE rdcore rdengine Qt6::Widgets Qt6::Concurrent)

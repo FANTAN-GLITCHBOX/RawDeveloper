@@ -388,6 +388,22 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
         denoised = cachedDenoise(linIn, *linp, p, useLens, o.noise);
         linp = denoised.get();
     }
+    // 画素と元画像の座標の対応
+    PixelMap map = o.map;
+    if (map.dx <= 0) {
+        map.nx0 = map.ny0 = 0;
+        map.dx = 1.0 / linp->width;
+        map.dy = 1.0 / linp->height;
+        map.fullW = linp->width / std::max(1e-6f, o.scale);
+        map.fullH = linp->height / std::max(1e-6f, o.scale);
+    }
+    // スポット修復（トーン調整の前、リニアで）
+    ImageF spotted;
+    if (p.enabled.local && !p.spots.empty()) {
+        spotted = *linp;
+        applySpots(spotted, p, map, o.fetch);
+        linp = &spotted;
+    }
     const ImageF& lin = *linp;
     const int w = lin.width, h = lin.height;
     ImageF g;
@@ -447,13 +463,31 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
         }
     }
 
+    // 部分補正
+    const bool local = localActive(p);
+    std::unique_ptr<MaskSet> masks;
+    if (local) masks = std::make_unique<MaskSet>(p, w, h, map);
+    const int nMask = masks ? masks->count() : 0;
+    const int showSlot = masks && p.showMaskIndex >= 0 ? masks->slotOf(p.showMaskIndex) : -1;
+    std::vector<float> showVals(showSlot >= 0 ? size_t(w) * h : 0);
+
     parallelFor(h, [&](int y0, int y1) {
+        float mv[32];
         for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
             float v[3], xin[3];
             for (int c = 0; c < 3; ++c) xin[c] = lin.data[i * 3 + c] * gains[c];
             if (camMat) {
                 const float a = xin[0], b = xin[1], d = xin[2];
                 for (int c = 0; c < 3; ++c) xin[c] = CM[c * 3] * a + CM[c * 3 + 1] * b + CM[c * 3 + 2] * d;
+            }
+            if (nMask > 0) {
+                const float disp[3] = {std::sqrt(std::max(xin[0], 0.0f)), std::sqrt(std::max(xin[1], 0.0f)),
+                                       std::sqrt(std::max(xin[2], 0.0f))};
+                masks->eval(int(i % w), int(i / w), disp, mv);
+                float lg[3];
+                localLinearGains(*masks, mv, lg);
+                for (int c = 0; c < 3; ++c) xin[c] *= lg[c];
+                if (showSlot >= 0) showVals[i] = mv[showSlot];
             }
             for (int c = 0; c < 3; ++c) {
                 const float x = std::max(xin[c], 0.0f);
@@ -482,6 +516,7 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
                 if (hasLum) vv = std::clamp(vv * (1 + tLum[bi] * 0.006f * sw), 0.0f, 1.0f);
                 hsvToRgb(hh, ss, vv, v[0], v[1], v[2]);
             }
+            if (nMask > 0) localDisplayAdjust(*masks, mv, v);
             if (skin) {
                 float hh, ss, vv;
                 rgbToHsv(std::clamp(v[0], 0.f, 1.f), std::clamp(v[1], 0.f, 1.f), std::clamp(v[2], 0.f, 1.f), hh, ss, vv);
@@ -501,6 +536,16 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
         for (float& x : g.data) x = std::clamp(x, 0.0f, 1.0f);
     }
     if (p.skinMaskView) skinMaskOverlay(g, p);
+    if (showSlot >= 0) {
+        // 選んでいるマスクの範囲を赤く重ねる
+        for (size_t i = 0; i < showVals.size(); ++i) {
+            const float a = showVals[i] * 0.55f;
+            float* c = &g.data[i * 3];
+            c[0] = c[0] * (1 - a) + 1.0f * a;
+            c[1] = c[1] * (1 - a) + 0.15f * a;
+            c[2] = c[2] * (1 - a) + 0.15f * a;
+        }
+    }
     if (p.enabled.crop) {
         g = rotate(g, p.cropAngle);
         if (o.doCrop && (p.cropW < 0.9999f || p.cropH < 0.9999f || p.cropX > 1e-4f || p.cropY > 1e-4f))
@@ -543,6 +588,7 @@ ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<floa
     }
     {
         rad = std::max(rad, float(skinMargin(pIn)));
+        if (pIn.enabled.local) rad = std::max(rad, float(spotMargin(pIn, W)));
     }
     const int m = static_cast<int>(std::ceil(rad));
     const int x0 = std::clamp(ox + rx - m, 0, W), y0 = std::clamp(oy + ry - m, 0, H);
@@ -569,6 +615,41 @@ ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<floa
         sub = downscale(sub, edge);
         k = static_cast<double>(sub.width) / (x1 - x0);
         o.scale = static_cast<float>(k);
+    }
+    // 部分補正・スポット修復のための座標の対応
+    o.map.nx0 = double(x0) / W;
+    o.map.ny0 = double(y0) / H;
+    o.map.dx = 1.0 / (k * W);
+    o.map.dy = 1.0 / (k * H);
+    o.map.fullW = W;
+    o.map.fullH = H;
+    if (pIn.enabled.local && !pIn.spots.empty()) {
+        const bool lensOn = lensActive(pIn, lens) || (pIn.enabled.lens && (std::abs(pIn.lensManualDistortion) > 0.5f ||
+                                                                           std::abs(pIn.lensManualVignetting) > 0.5f));
+        const Params pl = pIn;
+        o.fetch = [&lin, pl, lens, lensOn, W, H, k](double nx, double ny, int w, int h) {
+            // 元画像（フル解像度）から取り出して、いまの縮尺に合わせる
+            const int fx = int(std::floor(nx * W)), fy = int(std::floor(ny * H));
+            const int fw = std::max(1, int(std::ceil(w / k))), fh = std::max(1, int(std::ceil(h / k)));
+            ImageF part;
+            const int cx0 = std::clamp(fx, 0, W - 1), cy0 = std::clamp(fy, 0, H - 1);
+            const int cx1 = std::clamp(fx + fw, 1, W), cy1 = std::clamp(fy + fh, 1, H);
+            static const LensInfo none;
+            if (lensOn) part = lensRemapRegion(lin, pl, lens ? *lens : none, cx0, cy0, cx1 - cx0, cy1 - cy0);
+            else {
+                part.resize(cx1 - cx0, cy1 - cy0);
+                for (int y = cy0; y < cy1; ++y) std::copy(lin.px(cx0, y), lin.px(cx1, y), part.px(0, y - cy0));
+            }
+            ImageF out;
+            out.resize(w, h);
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    const int sx = std::clamp(int(fx + (x + 0.5) / k) - cx0, 0, part.width - 1);
+                    const int sy = std::clamp(int(fy + (y + 0.5) / k) - cy0, 0, part.height - 1);
+                    std::copy(part.px(sx, sy), part.px(sx, sy) + 3, out.px(x, y));
+                }
+            return out;
+        };
     }
     // ノイズ量は部分ではなく画像全体で測る（場所によって効き方が変わらないように）
     NoiseLevel nl;

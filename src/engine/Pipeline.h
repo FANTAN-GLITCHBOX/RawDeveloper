@@ -8,6 +8,7 @@
 #include "engine/Image.h"
 #include "engine/Lens.h"
 #include "engine/Denoise.h"
+#include "engine/Local.h"
 #include "engine/Params.h"
 
 namespace rd {
@@ -29,6 +30,8 @@ struct DevelopOptions {
     bool doCrop = true;    // false：回転のみ（切り抜きツール表示用）
     const LensInfo* lens = nullptr;  // レンズ補正用（なければ手動補正のみ）
     const NoiseLevel* noise = nullptr;  // この画像の解像度でのノイズ量（なければ画像から測る）
+    PixelMap map;                       // 画素 → 元画像の正規化座標（dx=0 なら画像全体とみなす）
+    PatchFetch fetch;                   // スポット修復のコピー元を元画像から取る（部分現像のとき）
 };
 
 // 画像のノイズ量（同じ画像なら測った結果を使い回す）

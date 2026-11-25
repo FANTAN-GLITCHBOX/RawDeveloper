@@ -77,6 +77,8 @@ QJsonObject Params::toJson() const {
     o["skin"] = QJsonObject{{"hue", skinHue},          {"sat", skinSat},          {"lum", skinLum},
                             {"uni_hue", skinUniHue},   {"uni_sat", skinUniSat},   {"uni_lum", skinUniLum}, {"smooth", skinSmooth}, {"texture", skinTexture},
                             {"center_hue", skinCenterHue}, {"center_sat", skinCenterSat}, {"range", skinRange}};
+    if (!masks.empty()) o["masks"] = masksToJson(masks);
+    if (!spots.empty()) o["spots"] = spotsToJson(spots);
     o["sharpen"] = QJsonObject{{"amount", sharpenAmount}, {"radius", sharpenRadius}, {"masking", sharpenMasking}};
     o["nr"] = QJsonObject{{"luma", nrLuma},           {"color", nrColor},
                           {"luma_detail", nrLumaDetail}, {"luma_contrast", nrLumaContrast},
@@ -94,7 +96,7 @@ QJsonObject Params::toJson() const {
     o["auto"] = QJsonObject{{"strength", autoStrength}};
     o["enabled"] = QJsonObject{{"basic", enabled.basic}, {"wheels", enabled.wheels}, {"curve", enabled.curve},
                                {"hsl", enabled.hsl},     {"detail", enabled.detail}, {"lens", enabled.lens},
-                               {"crop", enabled.crop},   {"skin", enabled.skin}};
+                               {"crop", enabled.crop},   {"skin", enabled.skin}, {"local", enabled.local}};
     return o;
 }
 
@@ -139,6 +141,8 @@ Params Params::fromJson(const QJsonObject& o) {
     p.sharpenAmount = num(s, "amount", 40);
     p.sharpenRadius = num(s, "radius", 1.0f);
     p.sharpenMasking = num(s, "masking", 0);
+    p.masks = masksFromJson(o.value("masks").toArray());
+    p.spots = spotsFromJson(o.value("spots").toArray());
     const QJsonObject sk = o.value("skin").toObject();
     p.skinHue = num(sk, "hue", 0);
     p.skinSat = num(sk, "sat", 0);
@@ -184,6 +188,7 @@ Params Params::fromJson(const QJsonObject& o) {
     p.enabled.hsl = e.value("hsl").toBool(true);
     p.enabled.detail = e.value("detail").toBool(true);
     p.enabled.skin = e.value("skin").toBool(true);
+    p.enabled.local = e.value("local").toBool(true);
     p.enabled.lens = e.value("lens").toBool(true);
     p.enabled.crop = e.value("crop").toBool(true);
     return p;
@@ -202,6 +207,10 @@ void resetPanel(Params& p, Panel panel) {
         case Panel::Wheels: p.lift = p.gamma = p.gain = p.offset = Wheel{}; break;
         case Panel::Curve: p.curve = d.curve; break;
         case Panel::Hsl: p.hslHue = p.hslSat = p.hslLum = {}; break;
+        case Panel::Local:
+            p.masks.clear();
+            p.spots.clear();
+            break;
         case Panel::Skin:
             p.skinHue = p.skinSat = p.skinLum = 0;
             p.skinUniHue = p.skinUniSat = p.skinUniLum = 0;
@@ -250,6 +259,7 @@ bool& enabledFlag(Params& p, Panel panel) {
         case Panel::Curve: return p.enabled.curve;
         case Panel::Hsl: return p.enabled.hsl;
         case Panel::Skin: return p.enabled.skin;
+        case Panel::Local: return p.enabled.local;
         case Panel::Detail: return p.enabled.detail;
         case Panel::Lens: return p.enabled.lens;
         case Panel::Crop: return p.enabled.crop;
@@ -264,6 +274,7 @@ const char* panelName(Panel panel) {
         case Panel::Curve: return "トーンカーブ";
         case Panel::Hsl: return "HSL";
         case Panel::Skin: return "肌色";
+        case Panel::Local: return "部分補正";
         case Panel::Detail: return "ディテール";
         case Panel::Lens: return "レンズ補正";
         case Panel::Crop: return "切り抜きと角度";

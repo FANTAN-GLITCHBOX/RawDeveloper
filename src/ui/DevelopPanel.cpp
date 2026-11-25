@@ -3,6 +3,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCompleter>
+#include <QListWidget>
 #include <QMap>
 #include <QTimer>
 #include <QLineEdit>
@@ -251,6 +252,170 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
     skin->add(hint(QStringLiteral("色相：−で赤み、＋で黄み。範囲：肌とみなす色の広さ（「肌の範囲を表示」で確認）")));
     addSection(skin, Panel::Skin);
 
+    // ---- 部分補正・スポット修復
+    auto* local = new Section(QStringLiteral("部分補正・スポット修復"), true);
+    {
+        auto* w = new QWidget;
+        auto* g = new QGridLayout(w);
+        g->setContentsMargins(8, 2, 8, 2);
+        g->setSpacing(3);
+        struct B {
+            const char* text;
+            const char* tip;
+            int tool;       // 描くツール
+            const char* add;  // すぐ作るマスク（肌・空）
+        };
+        const B bs[] = {{"段階", "ドラッグで段階フィルター（空を暗くするなど）", ToolLinear, nullptr},
+                        {"円形", "ドラッグで円形フィルター（顔を明るくするなど）", ToolRadial, nullptr},
+                        {"ブラシ", "なぞった所だけ補正（Alt で消す）", ToolBrush, nullptr},
+                        {"肌", "肌色の所を自動で選ぶ", ToolNone, "skin"},
+                        {"空", "空を自動で選ぶ", ToolNone, "sky"},
+                        {"スポット修復", "ゴミ・ほくろ・汚れをクリックで消す（Delete で取り消し）", ToolSpot, nullptr}};
+        int col = 0, rowi = 0;
+        for (const B& b : bs) {
+            auto* t = new QToolButton;
+            t->setText(QString::fromUtf8(b.text));
+            t->setToolTip(QString::fromUtf8(b.tip));
+            t->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            t->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            if (b.add) {
+                const QString type = QString::fromUtf8(b.add);
+                connect(t, &QToolButton::clicked, this, [this, type] {
+                    LocalMask m;
+                    m.type = type;
+                    m.name = type == "skin" ? QStringLiteral("肌") : QStringLiteral("空");
+                    p_.masks.push_back(m);
+                    p_.enabled.local = true;
+                    selMask_ = int(p_.masks.size()) - 1;
+                    refreshMaskList();
+                    syncSections();
+                    emitChange(true, QStringLiteral("マスクを追加：") + m.name);
+                    emit maskSelectionChanged(selMask_);
+                });
+            } else {
+                t->setCheckable(true);
+                const int tool = b.tool;
+                toolButtons_[tool] = t;
+                connect(t, &QToolButton::clicked, this, [this, tool](bool on) { setLocalTool(on ? LocalTool(tool) : ToolNone); });
+            }
+            g->addWidget(t, rowi, col);
+            if (++col == 3) {
+                col = 0;
+                ++rowi;
+            }
+        }
+        local->add(w);
+        maskList_ = new QListWidget;
+        maskList_->setFixedHeight(96);
+        local->add(maskList_);
+        connect(maskList_, &QListWidget::currentRowChanged, this, [this](int r) {
+            if (updating_) return;
+            selMask_ = r;
+            updateMaskRows();
+            emit maskSelectionChanged(r);
+        });
+        connect(maskList_, &QListWidget::itemChanged, this, [this](QListWidgetItem* it) {
+            if (updating_) return;
+            const int r = maskList_->row(it);
+            if (r < 0 || r >= int(p_.masks.size())) return;
+            p_.masks[r].enabled = it->checkState() == Qt::Checked;
+            emitChange(true, p_.masks[r].enabled ? QStringLiteral("マスクをオン") : QStringLiteral("マスクをオフ"));
+        });
+        auto* ops = new QWidget;
+        auto* oh = new QHBoxLayout(ops);
+        oh->setContentsMargins(8, 0, 8, 0);
+        auto mk = [&](const QString& t, auto fn) {
+            auto* b = new QPushButton(t);
+            connect(b, &QPushButton::clicked, this, fn);
+            oh->addWidget(b);
+        };
+        mk(QStringLiteral("反転"), [this] {
+            if (selMask_ < 0 || selMask_ >= int(p_.masks.size())) return;
+            p_.masks[selMask_].invert = !p_.masks[selMask_].invert;
+            refreshMaskList();
+            emitChange(true, QStringLiteral("マスクを反転"));
+        });
+        mk(QStringLiteral("複製"), [this] {
+            if (selMask_ < 0 || selMask_ >= int(p_.masks.size())) return;
+            LocalMask m = p_.masks[selMask_];
+            m.name += QStringLiteral("のコピー");
+            p_.masks.insert(p_.masks.begin() + selMask_ + 1, m);
+            ++selMask_;
+            refreshMaskList();
+            emitChange(true, QStringLiteral("マスクを複製"));
+            emit maskSelectionChanged(selMask_);
+        });
+        mk(QStringLiteral("削除"), [this] {
+            if (selMask_ < 0 || selMask_ >= int(p_.masks.size())) return;
+            p_.masks.erase(p_.masks.begin() + selMask_);
+            selMask_ = std::min(selMask_, int(p_.masks.size()) - 1);
+            refreshMaskList();
+            emitChange(true, QStringLiteral("マスクを削除"));
+            emit maskSelectionChanged(selMask_);
+        });
+        maskOverlay_ = new QCheckBox(QStringLiteral("範囲を表示"));
+        maskOverlay_->setToolTip(QStringLiteral("選んでいるマスクの範囲を赤く表示（O）"));
+        connect(maskOverlay_, &QCheckBox::toggled, this, [this](bool on) { emit maskOverlayToggled(on); });
+        oh->addWidget(maskOverlay_);
+        local->add(ops);
+
+        maskRows_ = new QWidget;
+        auto* mv = new QVBoxLayout(maskRows_);
+        mv->setContentsMargins(0, 0, 0, 0);
+        mv->setSpacing(1);
+        auto lrow = [&](const char* key, const char* label, double lo, double hi, int dec, double step,
+                        std::vector<std::pair<double, QColor>> grad = {}) {
+            auto* r = new ParamRow(QString::fromUtf8(key), QString::fromUtf8(label), lo, hi, 0, dec, step, {}, std::move(grad));
+            connect(r, &ParamRow::changed, this, &DevelopPanel::rowChanged);
+            mv->addWidget(r);
+            rows_[QString::fromUtf8(key)] = r;
+        };
+        lrow("local.exposure", "露出", -4, 4, 2, 0.05);
+        lrow("local.contrast", "コントラスト", -100, 100, 0, 1);
+        lrow("local.highlights", "ハイライト", -100, 100, 0, 1);
+        lrow("local.shadows", "シャドウ", -100, 100, 0, 1);
+        lrow("local.temp", "色温度", -100, 100, 0, 1, {{0, QColor("#4a78c8")}, {0.5, QColor("#888")}, {1, QColor("#d8a640")}});
+        lrow("local.tint", "色かぶり", -100, 100, 0, 1, {{0, QColor("#4caf50")}, {0.5, QColor("#888")}, {1, QColor("#c050c0")}});
+        lrow("local.saturation", "彩度", -100, 100, 0, 1);
+        lrow("local.feather", "ぼかし", 0, 100, 0, 1);
+        rows_["local.feather"]->setValue(50);
+        local->add(maskRows_);
+
+        brushRows_ = new QWidget;
+        auto* bv = new QVBoxLayout(brushRows_);
+        bv->setContentsMargins(0, 0, 0, 0);
+        bv->setSpacing(1);
+        brushSize_ = new ParamRow("brush.size", QStringLiteral("ブラシの大きさ"), 0.2, 20, 3, 1, 0.1, "%");
+        brushFlow_ = new ParamRow("brush.flow", QStringLiteral("流量"), 5, 100, 100, 0, 1, "%");
+        brushErase_ = new QCheckBox(QStringLiteral("消しゴム（Alt を押しながらでも）"));
+        auto* bw = new QWidget;
+        auto* bh = new QHBoxLayout(bw);
+        bh->setContentsMargins(8, 0, 8, 0);
+        bh->addWidget(brushErase_);
+        bv->addWidget(brushSize_);
+        bv->addWidget(brushFlow_);
+        bv->addWidget(bw);
+        spotSize_ = new ParamRow("spot.size", QStringLiteral("スポットの大きさ"), 0.1, 10, 1, 1, 0.1, "%");
+        spotClone_ = new QCheckBox(QStringLiteral("コピー（なじませない）"));
+        auto* sw = new QWidget;
+        auto* sh = new QHBoxLayout(sw);
+        sh->setContentsMargins(8, 0, 8, 0);
+        sh->addWidget(spotClone_);
+        auto* clear = new QPushButton(QStringLiteral("スポットを全部消す"));
+        connect(clear, &QPushButton::clicked, this, [this] {
+            if (p_.spots.empty()) return;
+            p_.spots.clear();
+            emitChange(true, QStringLiteral("スポット修復をすべて削除"));
+        });
+        sh->addWidget(clear);
+        bv->addWidget(spotSize_);
+        bv->addWidget(sw);
+        local->add(brushRows_);
+        local->add(hint(QStringLiteral("段階・円形：ドラッグで作成、丸い印をドラッグで調整。スポット：クリックで修復、点線の円（コピー元）は動かせます")));
+        updateMaskRows();
+    }
+    addSection(local, Panel::Local);
+
     // ---- ディテール
     auto* detail = new Section(QStringLiteral("ディテール"), true);
     row(detail, "sharpen.amount", QStringLiteral("シャープ 量"), 0, 150, 40, 0, 1);
@@ -459,7 +624,7 @@ void DevelopPanel::solo(Panel panel) {
         emitChange(true, QStringLiteral("ソロを解除"));
     } else {
         soloBackup_ = p_.enabled;
-        for (Panel q : {Panel::Basic, Panel::Wheels, Panel::Curve, Panel::Hsl, Panel::Skin, Panel::Detail, Panel::Lens, Panel::Crop})
+        for (Panel q : {Panel::Basic, Panel::Wheels, Panel::Curve, Panel::Hsl, Panel::Skin, Panel::Local, Panel::Detail, Panel::Lens, Panel::Crop})
             enabledFlag(p_, q) = (q == panel);
         emitChange(true, QStringLiteral("%1だけオン").arg(QString::fromUtf8(panelName(panel))));
     }
@@ -510,6 +675,8 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
     rows_["skin.smooth"]->setValue(p_.skinSmooth);
     rows_["skin.texture"]->setValue(p_.skinTexture);
     p_.skinMaskView = skinMask_->isChecked();
+    if (selMask_ >= int(p_.masks.size())) selMask_ = int(p_.masks.size()) - 1;
+    refreshMaskList();
     rows_["nr.luma_detail"]->setValue(p_.nrLumaDetail);
     rows_["nr.luma_contrast"]->setValue(p_.nrLumaContrast);
     rows_["nr.color_detail"]->setValue(p_.nrColorDetail);
@@ -607,6 +774,70 @@ void DevelopPanel::fillLensModels(const QString& maker, const QString& selectKey
     lensCombo_->setCurrentIndex(i < 0 ? 0 : i);
 }
 
+void DevelopPanel::setLocalTool(LocalTool t) {
+    localTool_ = t;
+    for (auto it = toolButtons_.begin(); it != toolButtons_.end(); ++it) it.value()->setChecked(it.key() == t && t != ToolNone);
+    brushRows_->setVisible(true);
+    brushSize_->setVisible(t == ToolBrush);
+    brushFlow_->setVisible(t == ToolBrush);
+    brushErase_->parentWidget()->setVisible(t == ToolBrush);
+    spotSize_->setVisible(t == ToolSpot);
+    spotClone_->parentWidget()->setVisible(t == ToolSpot);
+    emit localToolChanged(t);
+}
+
+void DevelopPanel::selectMask(int i) {
+    selMask_ = i;
+    refreshMaskList();
+}
+
+bool DevelopPanel::maskOverlay() const { return maskOverlay_ && maskOverlay_->isChecked(); }
+double DevelopPanel::brushSize() const { return brushSize_->value() / 100.0; }
+double DevelopPanel::brushFlow() const { return brushFlow_->value() / 100.0; }
+bool DevelopPanel::brushErase() const { return brushErase_->isChecked(); }
+double DevelopPanel::spotSize() const { return spotSize_->value() / 100.0; }
+bool DevelopPanel::spotClone() const { return spotClone_->isChecked(); }
+void DevelopPanel::setBrushSize(double r) { brushSize_->setValue(std::clamp(r * 100.0, 0.2, 20.0)); }
+
+void DevelopPanel::refreshMaskList() {
+    const bool old = updating_;
+    updating_ = true;
+    maskList_->clear();
+    static const QMap<QString, QString> names{{"linear", QStringLiteral("段階")}, {"radial", QStringLiteral("円形")},
+                                              {"brush", QStringLiteral("ブラシ")}, {"skin", QStringLiteral("肌")},
+                                              {"sky", QStringLiteral("空")}};
+    for (size_t i = 0; i < p_.masks.size(); ++i) {
+        const LocalMask& m = p_.masks[i];
+        QString t = QStringLiteral("%1. %2").arg(i + 1).arg(m.name.isEmpty() ? names.value(m.type, m.type) : m.name);
+        if (m.invert) t += QStringLiteral("（反転）");
+        auto* it = new QListWidgetItem(t);
+        it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+        it->setCheckState(m.enabled ? Qt::Checked : Qt::Unchecked);
+        maskList_->addItem(it);
+    }
+    if (selMask_ >= 0 && selMask_ < maskList_->count()) maskList_->setCurrentRow(selMask_);
+    updating_ = old;
+    updateMaskRows();
+}
+
+void DevelopPanel::updateMaskRows() {
+    const bool has = selMask_ >= 0 && selMask_ < int(p_.masks.size());
+    maskRows_->setEnabled(has);
+    if (!has) return;
+    const LocalMask& m = p_.masks[selMask_];
+    const bool old = updating_;
+    updating_ = true;
+    rows_["local.exposure"]->setValue(m.exposure);
+    rows_["local.contrast"]->setValue(m.contrast);
+    rows_["local.highlights"]->setValue(m.highlights);
+    rows_["local.shadows"]->setValue(m.shadows);
+    rows_["local.temp"]->setValue(m.temp);
+    rows_["local.tint"]->setValue(m.tint);
+    rows_["local.saturation"]->setValue(m.saturation);
+    rows_["local.feather"]->setValue(m.feather);
+    updating_ = old;
+}
+
 bool DevelopPanel::skinMaskShown() const { return skinMask_ && skinMask_->isChecked(); }
 
 void DevelopPanel::setLensStatus(const QString& text) {
@@ -626,7 +857,10 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
                                               {"nr.color", "カラーノイズ"}, {"skin.hue", "肌の色相"}, {"skin.sat", "肌の彩度"},
                                               {"skin.lum", "肌の明るさ"}, {"skin.uni_hue", "肌の均一化（色相）"},
                                               {"skin.uni_sat", "肌の均一化（彩度）"}, {"skin.uni_lum", "肌の均一化（明るさ）"},
-                                              {"skin.range", "肌の範囲"}, {"skin.smooth", "肌のなめらかさ"}, {"skin.texture", "肌の質感"}, {"nr.luma_detail", "輝度ノイズのディテール"},
+                                              {"skin.range", "肌の範囲"}, {"local.exposure", "部分補正：露出"}, {"local.contrast", "部分補正：コントラスト"},
+                                              {"local.highlights", "部分補正：ハイライト"}, {"local.shadows", "部分補正：シャドウ"},
+                                              {"local.temp", "部分補正：色温度"}, {"local.tint", "部分補正：色かぶり"},
+                                              {"local.saturation", "部分補正：彩度"}, {"local.feather", "部分補正：ぼかし"}, {"skin.smooth", "肌のなめらかさ"}, {"skin.texture", "肌の質感"}, {"nr.luma_detail", "輝度ノイズのディテール"},
                                               {"nr.luma_contrast", "輝度ノイズのコントラスト"}, {"nr.color_detail", "カラーノイズのディテール"},
                                               {"nr.color_smooth", "カラーノイズの滑らかさ"}, {"crop.angle", "角度"},
                                               {"lens.distortion", "歪曲（プロファイル）"}, {"lens.vignetting", "周辺光量（プロファイル）"},
@@ -657,6 +891,19 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
     else if (key == "sharpen.masking") p_.sharpenMasking = f;
     else if (key == "nr.luma") p_.nrLuma = f;
     else if (key == "nr.color") p_.nrColor = f;
+    else if (key.startsWith("local.")) {
+        if (selMask_ < 0 || selMask_ >= int(p_.masks.size())) return;
+        LocalMask& m = p_.masks[selMask_];
+        const QString k = key.mid(6);
+        if (k == "exposure") m.exposure = f;
+        else if (k == "contrast") m.contrast = f;
+        else if (k == "highlights") m.highlights = f;
+        else if (k == "shadows") m.shadows = f;
+        else if (k == "temp") m.temp = f;
+        else if (k == "tint") m.tint = f;
+        else if (k == "saturation") m.saturation = f;
+        else if (k == "feather") m.feather = f;
+    }
     else if (key == "skin.hue") p_.skinHue = f;
     else if (key == "skin.sat") p_.skinSat = f;
     else if (key == "skin.lum") p_.skinLum = f;
@@ -678,6 +925,7 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
     // そのパネルがオフのまま値を動かしたら、効果が見えるようにオンにする
     const Panel panel = key.startsWith("hsl:") ? Panel::Hsl
                         : key.startsWith("skin.") ? Panel::Skin
+                        : key.startsWith("local.") ? Panel::Local
                         : key.startsWith("sharpen") || key.startsWith("nr") ? Panel::Detail
                         : key == "crop.angle" ? Panel::Crop
                         : key.startsWith("lens.") ? Panel::Lens

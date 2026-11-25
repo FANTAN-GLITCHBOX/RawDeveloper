@@ -9,6 +9,7 @@
 #include "engine/Params.h"
 
 class QCheckBox;
+class QListWidget;
 class QComboBox;
 class QLineEdit;
 class QLabel;
@@ -36,6 +37,19 @@ public:
     void setWb(double temp, double tint, const QString& desc);
     QToolButton* wbPickButton() const { return wbPick_; }
     QToolButton* skinPickButton() const { return skinPick_; }
+    // 部分補正
+    enum LocalTool { ToolNone, ToolLinear, ToolRadial, ToolBrush, ToolSpot };
+    LocalTool localTool() const { return localTool_; }
+    void setLocalTool(LocalTool t);
+    int selectedMask() const { return selMask_; }
+    void selectMask(int i);
+    bool maskOverlay() const;
+    double brushSize() const;   // 幅に対する半径
+    double brushFlow() const;   // 0..1
+    bool brushErase() const;
+    double spotSize() const;    // 幅に対する半径
+    bool spotClone() const;
+    void setBrushSize(double r);
     bool skinMaskShown() const;
     QPushButton* cropButton() const { return cropBtn_; }
     double aspectValue() const;  // 0 = 自由、-1 = 元の比率
@@ -47,6 +61,9 @@ signals:
     void skinAutoRequested(int level);  // 1 弱め 2 普通 3 強め
     void skinMaskToggled(bool on);
     void profileChosen(const QString& name);
+    void localToolChanged(int tool);
+    void maskSelectionChanged(int index);
+    void maskOverlayToggled(bool on);
     void hoverKey(const QString& key);
     void cropToolToggled(bool on);
     void aspectChanged();
@@ -80,6 +97,18 @@ private:
     QCheckBox* lensCa_ = nullptr;
     QCheckBox* lensTrim_ = nullptr;
     QToolButton* skinPick_ = nullptr;
+    // 部分補正
+    void refreshMaskList();
+    void updateMaskRows();
+    LocalTool localTool_ = ToolNone;
+    int selMask_ = -1;
+    QListWidget* maskList_ = nullptr;
+    QCheckBox* maskOverlay_ = nullptr;
+    QCheckBox* brushErase_ = nullptr;
+    QCheckBox* spotClone_ = nullptr;
+    ParamRow *brushSize_ = nullptr, *brushFlow_ = nullptr, *spotSize_ = nullptr;
+    QWidget *maskRows_ = nullptr, *brushRows_ = nullptr;
+    QMap<int, QToolButton*> toolButtons_;
     QCheckBox* skinMask_ = nullptr;
     QComboBox* lensCombo_ = nullptr;   // レンズ（選んだメーカーの中から）
     QComboBox* lensMaker_ = nullptr;   // メーカー（先頭は「自動」）

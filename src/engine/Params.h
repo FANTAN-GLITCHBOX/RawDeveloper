@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "engine/Local.h"
+
 namespace rd {
 
 using CurvePoints = std::vector<std::pair<float, float>>;
@@ -16,7 +18,7 @@ constexpr float kHslCenters[kHslBands] = {0, 30, 60, 120, 180, 240, 270, 300};
 
 // パネルのオン/オフ（オフでも値は残し、処理だけ飛ばす）
 struct Enabled {
-    bool basic = true, wheels = true, curve = true, hsl = true, detail = true, lens = true, crop = true, skin = true;
+    bool basic = true, wheels = true, curve = true, hsl = true, detail = true, lens = true, crop = true, skin = true, local = true;
     bool operator==(const Enabled&) const = default;
 };
 
@@ -52,6 +54,10 @@ struct Params {
     float skinSmooth = 0, skinTexture = 50;  // なめらかさ・質感を残す
     float skinCenterHue = 22, skinCenterSat = 0.40f, skinRange = 50;  // 肌とみなす色の中心と幅
     bool skinMaskView = false;  // 肌の範囲を表示（保存しない、画面だけ）
+    // 部分補正・スポット修復
+    std::vector<LocalMask> masks;
+    std::vector<Spot> spots;
+    int showMaskIndex = -1;  // このマスクの範囲を赤く表示（保存しない、画面だけ）
     // レンズ補正
     bool lensProfile = true;      // プロファイル補正を使う
     QString lensKey;              // 空 = 自動検出、"メーカー|モデル" = 手動選択
@@ -78,7 +84,7 @@ struct Params {
 bool isIdentityCurve(const CurvePoints& c);
 
 // パネル単位で初期値に戻す
-enum class Panel { Basic, Wheels, Curve, Hsl, Skin, Detail, Lens, Crop };
+enum class Panel { Basic, Wheels, Curve, Hsl, Skin, Local, Detail, Lens, Crop };
 void resetPanel(Params& p, Panel panel);
 bool& enabledFlag(Params& p, Panel panel);
 const char* panelName(Panel panel);

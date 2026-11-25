@@ -395,6 +395,7 @@ void MainWindow::buildUi() {
     connect(panel_->wbPickButton(), &QToolButton::toggled, this, [this](bool on) {
         if (on) panel_->skinPickButton()->setChecked(false);
     });
+    setupLocal();
     connect(panel_, &DevelopPanel::profileChosen, this, [this](const QString& name) {
         if (!s_ || !s_->src) return;
         Params p = s_->params;
@@ -446,7 +447,6 @@ void MainWindow::buildUi() {
             applyParams(p, true, QStringLiteral("切り抜き"), true);
         } else {
             s_->params = p;
-    s_->params.skinMaskView = panel_->skinMaskShown();
         }
     });
     connect(scopes_, &ScopesPanel::hoverRange, viewer_, &Viewer::setMaskRange);
@@ -645,7 +645,9 @@ void MainWindow::buildActions() {
     }
     auto* esc = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     connect(esc, &QShortcut::activated, this, [this] {
-        if (viewer_->cropMode() && s_) {
+        if (panel_->localTool() != DevelopPanel::ToolNone) {
+            panel_->setLocalTool(DevelopPanel::ToolNone);
+        } else if (viewer_->cropMode() && s_) {
             angleTimer_.stop();
             viewer_->setAngleHint({});
             panel_->cropButton()->setChecked(false);
@@ -660,6 +662,8 @@ void MainWindow::buildActions() {
         QMessageBox::information(this, QStringLiteral("操作一覧"), QStringLiteral(
             "<b>評価</b><br>0〜5：★　[ ]：★を増減　6〜9：ラベル（赤・黄・緑・青）、紫はメニュー<br>"
             "P：採用　X：除外　U：フラグなし　G：ライブラリ　D / Enter：現像　F：全画面で選別<br><br>"
+            "<b>部分補正</b><br>段階・円形：ドラッグで作成、印をドラッグで調整（円形は Shift で正円）　ブラシ：なぞる（Alt で消す）<br>"
+            "スポット修復：クリック、点線の円（コピー元）をドラッグ　Delete：選んでいるスポット／マスクを削除　Esc：道具を終了<br><br>"
             "<b>調整のコピー</b><br>Ctrl+C：コピー　Ctrl+Shift+C：項目を選んでコピー　Ctrl+V：選んでいる写真すべてに貼り付け<br>"
             "Ctrl+Alt+V：前の写真と同じ調整　Ctrl+Shift+U：選んだ写真をまとめて自動調整　編集メニュー「同期」：変更を選択中すべてに反映<br><br>"
             "<b>調整（Resolve 風）</b><br>"
@@ -957,7 +961,7 @@ void MainWindow::rendered() {
         }
         panel_->setHistogram(d->histL);
         // フィルムストリップのサムネイルも更新
-        if (!dragging_ && r.version == version_ && !viewer_->cropMode() && s_->history.size() > 1 && !s_->params.skinMaskView) {
+        if (!dragging_ && r.version == version_ && !viewer_->cropMode() && s_->history.size() > 1 && !s_->params.skinMaskView && s_->params.showMaskIndex < 0) {
             pendingThumb_ = r.after.scaled(320, 320, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             pendingThumbPath_ = r.path;
             model_->setThumb(r.path, pendingThumb_);
@@ -1086,6 +1090,11 @@ void MainWindow::applyParams(const Params& p, bool final, const QString& desc, b
         scopes_->beginGhost();
     }
     s_->params = p;
+    s_->params.skinMaskView = panel_->skinMaskShown();
+    // 部分補正の範囲表示：チェックが入っているか、形を作っている最中
+    s_->params.showMaskIndex = (panel_->maskOverlay() || (ldrag_ != LDrag::None && ldrag_ != LDrag::SpotDst && ldrag_ != LDrag::SpotSrc))
+                                   ? panel_->selectedMask()
+                                   : -1;
     ++version_;
     if (final) {
         dragging_ = false;
@@ -1999,6 +2008,62 @@ void MainWindow::runScriptedTest(const QString& prefix) {
         }
         std::fflush(stdout);
     };
+    if (qEnvironmentVariableIsSet("RD_TEST_LOCAL")) {
+        QTimer::singleShot(5000, this, [this, prefix] {
+            panel_->setLocalTool(DevelopPanel::ToolLinear);
+            localPress({0.5, 0.0}, {});
+            localMove({0.5, 0.2}, true, {});
+            localMove({0.5, 0.35}, true, {});
+            localRelease({0.5, 0.35});
+            Params P = s_->params;
+            P.masks[0].exposure = -1.2f;
+            applyParams(P, true, "test", true);
+            panel_->setLocalTool(DevelopPanel::ToolRadial);
+            localPress({0.62, 0.3}, {});
+            localMove({0.75, 0.4}, true, {});
+            localRelease({0.75, 0.4});
+            P = s_->params;
+            P.masks[1].exposure = 0.8f;
+            P.masks[1].temp = 30;
+            applyParams(P, true, "test", true);
+            panel_->setLocalTool(DevelopPanel::ToolBrush);
+            localPress({0.1, 0.85}, {});
+            for (int i = 1; i <= 20; ++i) localMove({0.1 + i * 0.02, 0.85}, true, {});
+            localRelease({0.5, 0.85});
+            P = s_->params;
+            P.masks[2].saturation = -100;
+            applyParams(P, true, "test", true);
+            panel_->setLocalTool(DevelopPanel::ToolSpot);
+            localPress({0.58, 0.36}, {});
+            localRelease({0.58, 0.36});
+            std::printf("local: masks %d spots %d dabs %d hist %d\n", int(s_->params.masks.size()), int(s_->params.spots.size()),
+                        int(s_->params.masks.size() > 2 ? s_->params.masks[2].dabs.size() : 0), int(s_->history.size()));
+            for (const auto& m : s_->params.masks)
+                std::printf("  %s %.2f,%.2f %.2f,%.2f ev %.1f\n", m.type.toUtf8().constData(), m.x0, m.y0, m.x1, m.y1, m.exposure);
+            std::fflush(stdout);
+            QTimer::singleShot(2500, this, [this, prefix] {
+                grab().save(prefix + "_local1.png");
+                panel_->setLocalTool(DevelopPanel::ToolRadial);
+                panel_->selectMask(1);
+                for (auto* cb : panel_->findChildren<QCheckBox*>())
+                    if (cb->text() == QStringLiteral("範囲を表示")) cb->setChecked(true);
+                QTimer::singleShot(2500, this, [this, prefix] {
+                    std::printf("show %d overlay %d sel %d\n", s_->params.showMaskIndex, int(panel_->maskOverlay()), panel_->selectedMask());
+                    std::fflush(stdout);
+                    grab().save(prefix + "_local2.png");
+                    for (auto* cb : panel_->findChildren<QCheckBox*>())
+                        if (cb->text() == QStringLiteral("範囲を表示")) cb->setChecked(false);
+                    panel_->setLocalTool(DevelopPanel::ToolSpot);
+                    viewer_->zoom100();
+                    QTimer::singleShot(4000, this, [this, prefix] {
+                        grab().save(prefix + "_local3.png");
+                        QApplication::quit();
+                    });
+                });
+            });
+        });
+        return;
+    }
     if (qEnvironmentVariableIsSet("RD_TEST_SKIN")) {
         QTimer::singleShot(5000, this, [this, prefix] {
             emit panel_->skinAutoRequested(2);

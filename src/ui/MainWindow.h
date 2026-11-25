@@ -127,6 +127,17 @@ private:
     // 書き出し
     void exportDialog();
     void copySettings(bool choose);
+    // 部分補正・スポット修復（MainWindowLocal.cpp）
+    void setupLocal();
+    QSizeF fullDims() const;
+    QPointF dispToImg(QPointF n) const;
+    QPointF imgToDisp(QPointF i) const;
+    void localPress(QPointF n, Qt::KeyboardModifiers mods);
+    void localMove(QPointF n, bool pressed, Qt::KeyboardModifiers mods);
+    void localRelease(QPointF n);
+    void drawLocalOverlay(QPainter& p, const QRectF& r);
+    void deleteLocalSelection();
+    void applyLocal(const Params& p, bool final, const QString& desc);
     ImageF skinProbeImage() const;
     void pasteSettings();
     void pastePrevious();
@@ -196,6 +207,15 @@ private:
     double clipLum_ = -1;  // コピー元の明るさ（露出をそろえるとき）
     bool clipMatch_ = false;
     QString prevPath_;     // ひとつ前に開いていた写真
+    enum class LDrag { None, NewLinear, NewRadial, LinA, LinB, LinMove, RadCenter, RadX, RadY, Brush, SpotDst, SpotSrc };
+    LDrag ldrag_ = LDrag::None;
+    QPointF ldragStart_;
+    LocalMask ldragMask_;
+    Spot ldragSpot_{};
+    int selSpot_ = -1;
+    QPointF hoverN_{-1, -1};
+    QPointF lastDab_{-10, -10};
+    bool ldragMoved_ = false;
     QAction* syncAct_ = nullptr;
     std::vector<BatchJob> batchQueue_;
     bool batchRunning_ = false;
