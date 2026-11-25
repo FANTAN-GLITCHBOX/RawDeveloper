@@ -48,6 +48,7 @@ add_library(rdengine STATIC
   src/engine/Params.h src/engine/Params.cpp
   src/engine/Pipeline.h src/engine/Pipeline.cpp
     src/engine/Denoise.h src/engine/Denoise.cpp
+    src/engine/Skin.h src/engine/Skin.cpp
   src/engine/Auto.h src/engine/Auto.cpp
   src/engine/Lens.h src/engine/Lens.cpp
   src/engine/RawLoader.h src/engine/RawLoader.cpp
@@ -98,6 +99,9 @@ target_link_libraries(rd_auto PRIVATE rdcore)
 
 add_executable(rd_nr tests/nr_tool.cpp)
 target_link_libraries(rd_nr PRIVATE rdcore)
+
+add_executable(rd_skin tests/skin_tool.cpp)
+target_link_libraries(rd_skin PRIVATE rdcore)
 
 add_executable(rd_develop tests/develop_tool.cpp)
 target_link_libraries(rd_develop PRIVATE rdengine)

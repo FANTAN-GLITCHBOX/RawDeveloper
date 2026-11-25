@@ -35,6 +35,8 @@ public:
     void nudgeZone(const QString& key, double dv, bool final);
     void setWb(double temp, double tint, const QString& desc);
     QToolButton* wbPickButton() const { return wbPick_; }
+    QToolButton* skinPickButton() const { return skinPick_; }
+    bool skinMaskShown() const;
     QPushButton* cropButton() const { return cropBtn_; }
     double aspectValue() const;  // 0 = 自由、-1 = 元の比率
     void setLensStatus(const QString& text);
@@ -42,6 +44,8 @@ public:
 signals:
     void paramsChanged(const rd::Params& p, bool final, const QString& desc);
     void autoRequested(float strength, bool wbOnly);
+    void skinAutoRequested(int level);  // 1 弱め 2 普通 3 強め
+    void skinMaskToggled(bool on);
     void hoverKey(const QString& key);
     void cropToolToggled(bool on);
     void aspectChanged();
@@ -73,6 +77,8 @@ private:
     QCheckBox* lensProfile_ = nullptr;
     QCheckBox* lensCa_ = nullptr;
     QCheckBox* lensTrim_ = nullptr;
+    QToolButton* skinPick_ = nullptr;
+    QCheckBox* skinMask_ = nullptr;
     QComboBox* lensCombo_ = nullptr;   // レンズ（選んだメーカーの中から）
     QComboBox* lensMaker_ = nullptr;   // メーカー（先頭は「自動」）
     QLineEdit* lensSearch_ = nullptr;  // 全メーカーから名前で検索

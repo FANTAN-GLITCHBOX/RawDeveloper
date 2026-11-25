@@ -73,6 +73,9 @@ QJsonObject Params::toJson() const {
                            {"lum", toArr(hslLum.data(), kHslBands)}};
     o["wheels"] = QJsonObject{{"lift", toArr(lift.data(), 3)}, {"gamma", toArr(gamma.data(), 3)},
                               {"gain", toArr(gain.data(), 3)}, {"offset", toArr(offset.data(), 3)}};
+    o["skin"] = QJsonObject{{"hue", skinHue},          {"sat", skinSat},          {"lum", skinLum},
+                            {"uni_hue", skinUniHue},   {"uni_sat", skinUniSat},   {"uni_lum", skinUniLum},
+                            {"center_hue", skinCenterHue}, {"center_sat", skinCenterSat}, {"range", skinRange}};
     o["sharpen"] = QJsonObject{{"amount", sharpenAmount}, {"radius", sharpenRadius}, {"masking", sharpenMasking}};
     o["nr"] = QJsonObject{{"luma", nrLuma},           {"color", nrColor},
                           {"luma_detail", nrLumaDetail}, {"luma_contrast", nrLumaContrast},
@@ -90,7 +93,7 @@ QJsonObject Params::toJson() const {
     o["auto"] = QJsonObject{{"strength", autoStrength}};
     o["enabled"] = QJsonObject{{"basic", enabled.basic}, {"wheels", enabled.wheels}, {"curve", enabled.curve},
                                {"hsl", enabled.hsl},     {"detail", enabled.detail}, {"lens", enabled.lens},
-                               {"crop", enabled.crop}};
+                               {"crop", enabled.crop},   {"skin", enabled.skin}};
     return o;
 }
 
@@ -129,6 +132,16 @@ Params Params::fromJson(const QJsonObject& o) {
     p.sharpenAmount = num(s, "amount", 40);
     p.sharpenRadius = num(s, "radius", 1.0f);
     p.sharpenMasking = num(s, "masking", 0);
+    const QJsonObject sk = o.value("skin").toObject();
+    p.skinHue = num(sk, "hue", 0);
+    p.skinSat = num(sk, "sat", 0);
+    p.skinLum = num(sk, "lum", 0);
+    p.skinUniHue = num(sk, "uni_hue", 0);
+    p.skinUniSat = num(sk, "uni_sat", 0);
+    p.skinUniLum = num(sk, "uni_lum", 0);
+    p.skinCenterHue = num(sk, "center_hue", 22);
+    p.skinCenterSat = num(sk, "center_sat", 0.40f);
+    p.skinRange = num(sk, "range", 50);
     const QJsonObject nr = o.value("nr").toObject();
     p.nrLuma = num(nr, "luma", 0);
     p.nrColor = num(nr, "color", 25);
@@ -161,6 +174,7 @@ Params Params::fromJson(const QJsonObject& o) {
     p.enabled.curve = e.value("curve").toBool(true);
     p.enabled.hsl = e.value("hsl").toBool(true);
     p.enabled.detail = e.value("detail").toBool(true);
+    p.enabled.skin = e.value("skin").toBool(true);
     p.enabled.lens = e.value("lens").toBool(true);
     p.enabled.crop = e.value("crop").toBool(true);
     return p;
@@ -179,6 +193,13 @@ void resetPanel(Params& p, Panel panel) {
         case Panel::Wheels: p.lift = p.gamma = p.gain = p.offset = Wheel{}; break;
         case Panel::Curve: p.curve = d.curve; break;
         case Panel::Hsl: p.hslHue = p.hslSat = p.hslLum = {}; break;
+        case Panel::Skin:
+            p.skinHue = p.skinSat = p.skinLum = 0;
+            p.skinUniHue = p.skinUniSat = p.skinUniLum = 0;
+            p.skinCenterHue = d.skinCenterHue;
+            p.skinCenterSat = d.skinCenterSat;
+            p.skinRange = d.skinRange;
+            break;
         case Panel::Detail:
             p.sharpenAmount = d.sharpenAmount;
             p.sharpenRadius = d.sharpenRadius;
@@ -217,6 +238,7 @@ bool& enabledFlag(Params& p, Panel panel) {
         case Panel::Wheels: return p.enabled.wheels;
         case Panel::Curve: return p.enabled.curve;
         case Panel::Hsl: return p.enabled.hsl;
+        case Panel::Skin: return p.enabled.skin;
         case Panel::Detail: return p.enabled.detail;
         case Panel::Lens: return p.enabled.lens;
         case Panel::Crop: return p.enabled.crop;
@@ -230,6 +252,7 @@ const char* panelName(Panel panel) {
         case Panel::Wheels: return "カラーホイール";
         case Panel::Curve: return "トーンカーブ";
         case Panel::Hsl: return "HSL";
+        case Panel::Skin: return "肌色";
         case Panel::Detail: return "ディテール";
         case Panel::Lens: return "レンズ補正";
         case Panel::Crop: return "切り抜きと角度";

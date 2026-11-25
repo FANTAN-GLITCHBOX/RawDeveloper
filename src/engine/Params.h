@@ -16,7 +16,7 @@ constexpr float kHslCenters[kHslBands] = {0, 30, 60, 120, 180, 240, 270, 300};
 
 // パネルのオン/オフ（オフでも値は残し、処理だけ飛ばす）
 struct Enabled {
-    bool basic = true, wheels = true, curve = true, hsl = true, detail = true, lens = true, crop = true;
+    bool basic = true, wheels = true, curve = true, hsl = true, detail = true, lens = true, crop = true, skin = true;
     bool operator==(const Enabled&) const = default;
 };
 
@@ -41,6 +41,11 @@ struct Params {
     float nrLuma = 0, nrColor = 25;
     float nrLumaDetail = 50, nrLumaContrast = 0;   // 輝度：ディテール・コントラスト
     float nrColorDetail = 50, nrColorSmooth = 50;  // カラー：ディテール・滑らかさ
+    // 肌色（色相：−＝赤み＋＝黄み、彩度・明るさ：−100..100、均一化 0..100）
+    float skinHue = 0, skinSat = 0, skinLum = 0;
+    float skinUniHue = 0, skinUniSat = 0, skinUniLum = 0;
+    float skinCenterHue = 22, skinCenterSat = 0.40f, skinRange = 50;  // 肌とみなす色の中心と幅
+    bool skinMaskView = false;  // 肌の範囲を表示（保存しない、画面だけ）
     // レンズ補正
     bool lensProfile = true;      // プロファイル補正を使う
     QString lensKey;              // 空 = 自動検出、"メーカー|モデル" = 手動選択
@@ -67,7 +72,7 @@ struct Params {
 bool isIdentityCurve(const CurvePoints& c);
 
 // パネル単位で初期値に戻す
-enum class Panel { Basic, Wheels, Curve, Hsl, Detail, Lens, Crop };
+enum class Panel { Basic, Wheels, Curve, Hsl, Skin, Detail, Lens, Crop };
 void resetPanel(Params& p, Panel panel);
 bool& enabledFlag(Params& p, Panel panel);
 const char* panelName(Panel panel);

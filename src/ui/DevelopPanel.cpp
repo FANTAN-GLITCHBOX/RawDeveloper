@@ -187,6 +187,51 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
     }
     addSection(hsl, Panel::Hsl);
 
+    // ---- 肌色
+    auto* skin = new Section(QStringLiteral("肌色"), true);
+    {
+        auto* w = new QWidget;
+        auto* h = new QHBoxLayout(w);
+        h->setContentsMargins(8, 2, 8, 2);
+        h->addWidget(new QLabel(QStringLiteral("いい感じに")));
+        int lv = 1;
+        for (const char* t : {"弱め", "普通", "強め"}) {
+            auto* b = new QPushButton(QString::fromUtf8(t));
+            connect(b, &QPushButton::clicked, this, [this, lv] { emit skinAutoRequested(lv); });
+            h->addWidget(b);
+            ++lv;
+        }
+        skin->add(w);
+        auto* w2 = new QWidget;
+        auto* h2 = new QHBoxLayout(w2);
+        h2->setContentsMargins(8, 2, 8, 2);
+        skinPick_ = new QToolButton;
+        skinPick_->setText(QStringLiteral("◎ 肌をクリックして指定"));
+        skinPick_->setCheckable(true);
+        skinPick_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        skinPick_->setToolTip(QStringLiteral("写真の中の肌（頬など）をクリックすると、その色を肌として扱います"));
+        skinMask_ = new QCheckBox(QStringLiteral("肌の範囲を表示"));
+        connect(skinMask_, &QCheckBox::toggled, this, [this](bool on) {
+            p_.skinMaskView = on;
+            emit skinMaskToggled(on);
+        });
+        h2->addWidget(skinPick_);
+        h2->addWidget(skinMask_);
+        h2->addStretch(1);
+        skin->add(w2);
+    }
+    row(skin, "skin.hue", QStringLiteral("色相"), -100, 100, 0, 0, 1, {},
+        {{0, QColor("#c0504a")}, {0.5, QColor("#d9a07a")}, {1, QColor("#d8c060")}});
+    row(skin, "skin.sat", QStringLiteral("彩度"), -100, 100, 0, 0, 1);
+    row(skin, "skin.lum", QStringLiteral("明るさ"), -100, 100, 0, 0, 1);
+    skin->add(hint(QStringLiteral("均一化（赤み・黄ぐすみ・まだらを肌の平均に寄せる）")));
+    row(skin, "skin.uni_hue", QStringLiteral("色相"), 0, 100, 0, 0, 1);
+    row(skin, "skin.uni_sat", QStringLiteral("彩度"), 0, 100, 0, 0, 1);
+    row(skin, "skin.uni_lum", QStringLiteral("明るさ"), 0, 100, 0, 0, 1);
+    row(skin, "skin.range", QStringLiteral("範囲"), 0, 100, 50, 0, 1);
+    skin->add(hint(QStringLiteral("色相：−で赤み、＋で黄み。範囲：肌とみなす色の広さ（「肌の範囲を表示」で確認）")));
+    addSection(skin, Panel::Skin);
+
     // ---- ディテール
     auto* detail = new Section(QStringLiteral("ディテール"), true);
     row(detail, "sharpen.amount", QStringLiteral("シャープ 量"), 0, 150, 40, 0, 1);
@@ -395,7 +440,7 @@ void DevelopPanel::solo(Panel panel) {
         emitChange(true, QStringLiteral("ソロを解除"));
     } else {
         soloBackup_ = p_.enabled;
-        for (Panel q : {Panel::Basic, Panel::Wheels, Panel::Curve, Panel::Hsl, Panel::Detail, Panel::Lens, Panel::Crop})
+        for (Panel q : {Panel::Basic, Panel::Wheels, Panel::Curve, Panel::Hsl, Panel::Skin, Panel::Detail, Panel::Lens, Panel::Crop})
             enabledFlag(p_, q) = (q == panel);
         emitChange(true, QStringLiteral("%1だけオン").arg(QString::fromUtf8(panelName(panel))));
     }
@@ -435,6 +480,14 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
     rows_["sharpen.masking"]->setValue(p_.sharpenMasking);
     rows_["nr.luma"]->setValue(p_.nrLuma);
     rows_["nr.color"]->setValue(p_.nrColor);
+    rows_["skin.hue"]->setValue(p_.skinHue);
+    rows_["skin.sat"]->setValue(p_.skinSat);
+    rows_["skin.lum"]->setValue(p_.skinLum);
+    rows_["skin.uni_hue"]->setValue(p_.skinUniHue);
+    rows_["skin.uni_sat"]->setValue(p_.skinUniSat);
+    rows_["skin.uni_lum"]->setValue(p_.skinUniLum);
+    rows_["skin.range"]->setValue(p_.skinRange);
+    p_.skinMaskView = skinMask_->isChecked();
     rows_["nr.luma_detail"]->setValue(p_.nrLumaDetail);
     rows_["nr.luma_contrast"]->setValue(p_.nrLumaContrast);
     rows_["nr.color_detail"]->setValue(p_.nrColorDetail);
@@ -532,6 +585,8 @@ void DevelopPanel::fillLensModels(const QString& maker, const QString& selectKey
     lensCombo_->setCurrentIndex(i < 0 ? 0 : i);
 }
 
+bool DevelopPanel::skinMaskShown() const { return skinMask_ && skinMask_->isChecked(); }
+
 void DevelopPanel::setLensStatus(const QString& text) {
     if (LensDb::get().ok()) lensStatus_->setText(text);
 }
@@ -546,7 +601,10 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
                                               {"vibrance", "自然な彩度"}, {"saturation", "彩度"},
                                               {"sharpen.amount", "シャープ"}, {"sharpen.radius", "シャープ半径"},
                                               {"sharpen.masking", "シャープのマスク"}, {"nr.luma", "輝度ノイズ"},
-                                              {"nr.color", "カラーノイズ"}, {"nr.luma_detail", "輝度ノイズのディテール"},
+                                              {"nr.color", "カラーノイズ"}, {"skin.hue", "肌の色相"}, {"skin.sat", "肌の彩度"},
+                                              {"skin.lum", "肌の明るさ"}, {"skin.uni_hue", "肌の均一化（色相）"},
+                                              {"skin.uni_sat", "肌の均一化（彩度）"}, {"skin.uni_lum", "肌の均一化（明るさ）"},
+                                              {"skin.range", "肌の範囲"}, {"nr.luma_detail", "輝度ノイズのディテール"},
                                               {"nr.luma_contrast", "輝度ノイズのコントラスト"}, {"nr.color_detail", "カラーノイズのディテール"},
                                               {"nr.color_smooth", "カラーノイズの滑らかさ"}, {"crop.angle", "角度"},
                                               {"lens.distortion", "歪曲（プロファイル）"}, {"lens.vignetting", "周辺光量（プロファイル）"},
@@ -577,6 +635,13 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
     else if (key == "sharpen.masking") p_.sharpenMasking = f;
     else if (key == "nr.luma") p_.nrLuma = f;
     else if (key == "nr.color") p_.nrColor = f;
+    else if (key == "skin.hue") p_.skinHue = f;
+    else if (key == "skin.sat") p_.skinSat = f;
+    else if (key == "skin.lum") p_.skinLum = f;
+    else if (key == "skin.uni_hue") p_.skinUniHue = f;
+    else if (key == "skin.uni_sat") p_.skinUniSat = f;
+    else if (key == "skin.uni_lum") p_.skinUniLum = f;
+    else if (key == "skin.range") p_.skinRange = f;
     else if (key == "nr.luma_detail") p_.nrLumaDetail = f;
     else if (key == "nr.luma_contrast") p_.nrLumaContrast = f;
     else if (key == "nr.color_detail") p_.nrColorDetail = f;
@@ -588,6 +653,7 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
     else if (key == "lens.manual_vignetting") p_.lensManualVignetting = f;
     // そのパネルがオフのまま値を動かしたら、効果が見えるようにオンにする
     const Panel panel = key.startsWith("hsl:") ? Panel::Hsl
+                        : key.startsWith("skin.") ? Panel::Skin
                         : key.startsWith("sharpen") || key.startsWith("nr") ? Panel::Detail
                         : key == "crop.angle" ? Panel::Crop
                         : key.startsWith("lens.") ? Panel::Lens

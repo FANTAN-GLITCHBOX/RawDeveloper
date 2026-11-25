@@ -1,4 +1,5 @@
 #include "engine/Pipeline.h"
+#include "engine/Skin.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -392,6 +393,7 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
     }
     const float sat = p.enabled.basic ? p.saturation : 0, vib = p.enabled.basic ? p.vibrance : 0;
     const bool hsl = p.enabled.hsl && (anyNonZero(p.hslHue) || anyNonZero(p.hslSat) || anyNonZero(p.hslLum));
+    const bool skin = skinActive(p) && (p.skinHue != 0 || p.skinSat != 0 || p.skinLum != 0 || p.skinUniHue > 0 || p.skinUniSat > 0);
     const auto tHue = bandTable(p.hslHue), tSat = bandTable(p.hslSat), tLum = bandTable(p.hslLum);
     const bool hasHue = anyNonZero(p.hslHue), hasSat = anyNonZero(p.hslSat), hasLum = anyNonZero(p.hslLum);
     // 肌色の重み（色相 0..360）
@@ -453,14 +455,25 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
                 if (hasLum) vv = std::clamp(vv * (1 + tLum[bi] * 0.006f * sw), 0.0f, 1.0f);
                 hsvToRgb(hh, ss, vv, v[0], v[1], v[2]);
             }
+            if (skin) {
+                float hh, ss, vv;
+                rgbToHsv(std::clamp(v[0], 0.f, 1.f), std::clamp(v[1], 0.f, 1.f), std::clamp(v[2], 0.f, 1.f), hh, ss, vv);
+                const float m = skinMask(p, hh, ss, vv);
+                if (m > 0) {
+                    skinAdjust(p, m, hh, ss, vv);
+                    hsvToRgb(hh, ss, vv, v[0], v[1], v[2]);
+                }
+            }
             for (int c = 0; c < 3; ++c) g.data[i * 3 + c] = std::clamp(v[c], 0.0f, 1.0f);
         }
     });
+    if (o.detail) skinLumaUniformity(g, p, o.scale);
 
     if (o.detail && p.enabled.detail) {
         applyDetail(g, p, o.scale);
         for (float& x : g.data) x = std::clamp(x, 0.0f, 1.0f);
     }
+    if (p.skinMaskView) skinMaskOverlay(g, p);
     if (p.enabled.crop) {
         g = rotate(g, p.cropAngle);
         if (o.doCrop && (p.cropW < 0.9999f || p.cropH < 0.9999f || p.cropX > 1e-4f || p.cropY > 1e-4f))
@@ -500,6 +513,9 @@ ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<floa
     if (pIn.enabled.detail) {
         rad = std::max(rad, pIn.sharpenRadius * 4 + 2);
         rad = std::max(rad, float(denoiseMargin(pIn)));
+    }
+    {
+        rad = std::max(rad, float(skinMargin(pIn)));
     }
     const int m = static_cast<int>(std::ceil(rad));
     const int x0 = std::clamp(ox + rx - m, 0, W), y0 = std::clamp(oy + ry - m, 0, H);

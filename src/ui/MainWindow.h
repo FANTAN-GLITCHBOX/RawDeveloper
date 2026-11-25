@@ -127,6 +127,7 @@ private:
     // 書き出し
     void exportDialog();
     void copySettings(bool choose);
+    ImageF skinProbeImage() const;
     void pasteSettings();
     void pastePrevious();
     void batchAuto();

@@ -32,6 +32,7 @@ const std::vector<PasteGroup>& pasteGroups() {
         {"wheels", "カラーホイール", {"wheels", "enabled.wheels"}},
         {"curve", "トーンカーブ", {"curve", "enabled.curve"}},
         {"hsl", "HSL", {"hsl", "enabled.hsl"}},
+        {"skin", "肌色", {"skin", "enabled.skin"}},
         {"detail", "ディテール（シャープ・ノイズ低減）", {"sharpen", "nr", "enabled.detail"}},
         {"lens", "レンズ補正", {"lens", "enabled.lens"}},
         {"crop", "切り抜き・角度", {"crop", "enabled.crop"}},
@@ -39,7 +40,7 @@ const std::vector<PasteGroup>& pasteGroups() {
     return g;
 }
 
-QStringList defaultPasteGroups() { return {"exposure", "tone", "presence", "wheels", "curve", "hsl", "detail", "lens"}; }
+QStringList defaultPasteGroups() { return {"exposure", "tone", "presence", "wheels", "curve", "hsl", "skin", "detail", "lens"}; }
 
 namespace {
 QJsonValue getKey(const QJsonObject& o, const QString& key) {
@@ -62,7 +63,7 @@ const QStringList& allKeys() {
                                "whites", "blacks",         "saturation",     "vibrance",      "curve",
                                "hsl",    "wheels",         "sharpen",        "nr",            "lens",
                                "crop",   "enabled.basic",  "enabled.wheels", "enabled.curve", "enabled.hsl",
-                               "enabled.detail", "enabled.lens", "enabled.crop"};
+                               "enabled.detail", "enabled.lens", "enabled.crop", "skin", "enabled.skin"};
     return k;
 }
 }  // namespace

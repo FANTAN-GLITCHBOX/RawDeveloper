@@ -52,6 +52,7 @@
 #include "core/Export.h"
 #include "core/Xmp.h"
 #include "engine/Auto.h"
+#include "engine/Skin.h"
 #include "engine/Color.h"
 #include "engine/Pipeline.h"
 #include "ui/Batch.h"
@@ -385,6 +386,32 @@ void MainWindow::buildUi() {
     });
     connect(panel_->wbPickButton(), &QToolButton::toggled, viewer_, &Viewer::setPicking);
     connect(viewer_, &Viewer::picked, this, &MainWindow::wbPick);
+    connect(panel_->skinPickButton(), &QToolButton::toggled, this, [this](bool on) {
+        if (on) panel_->wbPickButton()->setChecked(false);
+        viewer_->setPicking(on);
+        if (on) statusBar()->showMessage(QStringLiteral("肌（頬など）をクリックしてください"), 5000);
+    });
+    connect(panel_->wbPickButton(), &QToolButton::toggled, this, [this](bool on) {
+        if (on) panel_->skinPickButton()->setChecked(false);
+    });
+    connect(panel_, &DevelopPanel::skinMaskToggled, this, [this](bool on) {
+        if (!s_) return;
+        s_->params.skinMaskView = on;
+        ++version_;
+        requestRender();
+    });
+    connect(panel_, &DevelopPanel::skinAutoRequested, this, [this](int level) {
+        if (!s_ || !s_->preview) return;
+        const SkinStats st = analyzeSkin(skinProbeImage());
+        if (st.fraction < 0.003f) {
+            statusBar()->showMessage(QStringLiteral("肌らしい色が見つかりませんでした。「肌をクリックして指定」を使ってください"), 6000);
+            return;
+        }
+        static const char* names[] = {"", "弱め", "普通", "強め"};
+        Params p = skinAuto(s_->params, st, level);
+        applyParams(p, true, QStringLiteral("肌色：いい感じに（%1）").arg(QString::fromUtf8(names[level])), true);
+        statusBar()->showMessage(QStringLiteral("肌色を整えました。違う所が選ばれていたら「肌をクリックして指定」で直せます"), 6000);
+    });
     connect(viewer_, &Viewer::probe, scopes_, &ScopesPanel::setProbe);
     connect(viewer_, &Viewer::wantHiRes, this, &MainWindow::requestDetailView);
     connect(viewer_, &Viewer::viewChanged, this, [this] { viewTimer_.start(30); });
@@ -401,6 +428,7 @@ void MainWindow::buildUi() {
             applyParams(p, true, QStringLiteral("切り抜き"), true);
         } else {
             s_->params = p;
+    s_->params.skinMaskView = panel_->skinMaskShown();
         }
     });
     connect(scopes_, &ScopesPanel::hoverRange, viewer_, &Viewer::setMaskRange);
@@ -912,7 +940,7 @@ void MainWindow::rendered() {
         }
         panel_->setHistogram(d->histL);
         // フィルムストリップのサムネイルも更新
-        if (!dragging_ && r.version == version_ && !viewer_->cropMode() && s_->history.size() > 1) {
+        if (!dragging_ && r.version == version_ && !viewer_->cropMode() && s_->history.size() > 1 && !s_->params.skinMaskView) {
             pendingThumb_ = r.after.scaled(320, 320, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             pendingThumbPath_ = r.path;
             model_->setThumb(r.path, pendingThumb_);
@@ -1198,8 +1226,48 @@ void MainWindow::autoAdjust(float strength, bool wbOnly) {
                                  5000);
 }
 
+ImageF MainWindow::skinProbeImage() const {
+    // 肌色の補正をかける前の色（表示と同じ切り抜き）
+    Params q = s_->params;
+    q.enabled.skin = false;
+    q.skinMaskView = false;
+    const ImageF small = downscale(*s_->preview, 800);
+    DevelopOptions o;
+    o.scale = float(small.width) / std::max(1, s_->src->linear.width) * (float(s_->src->linear.width) / s_->preview->width) *
+              (float(s_->preview->width) / std::max(1, s_->src->meta.fullWidth > 0 ? s_->src->meta.fullWidth : s_->src->linear.width));
+    o.detail = false;
+    o.lens = s_->lens.get();
+    return develop(small, q, s_->src->asShotGains, o);
+}
+
 void MainWindow::wbPick(int x, int y) {
     if (!s_ || s_->last.isNull()) return;
+    if (panel_->skinPickButton()->isChecked()) {
+        const ImageF g = skinProbeImage();
+        const int cx = std::clamp(int(double(x) / s_->last.width() * g.width), 0, g.width - 1);
+        const int cy = std::clamp(int(double(y) / s_->last.height() * g.height), 0, g.height - 1);
+        double sum[3] = {0, 0, 0};
+        int n = 0;
+        for (int yy = std::max(0, cy - 2); yy <= std::min(g.height - 1, cy + 2); ++yy)
+            for (int xx = std::max(0, cx - 2); xx <= std::min(g.width - 1, cx + 2); ++xx) {
+                for (int c = 0; c < 3; ++c) sum[c] += g.px(xx, yy)[c];
+                ++n;
+            }
+        float hh, ss, vv;
+        rgbToHsv(float(sum[0] / n), float(sum[1] / n), float(sum[2] / n), hh, ss, vv);
+        panel_->skinPickButton()->setChecked(false);
+        if (ss < 0.05f || vv < 0.12f) {
+            statusBar()->showMessage(QStringLiteral("色が薄い／暗い場所です。頬など肌の明るい部分をクリックしてください"), 5000);
+            return;
+        }
+        Params p = s_->params;
+        p.skinCenterHue = std::round(hh);
+        p.skinCenterSat = std::round(ss * 100) / 100;
+        p.enabled.skin = true;
+        applyParams(p, true, QStringLiteral("肌色：スポイト"), true);
+        statusBar()->showMessage(QStringLiteral("この色を肌として扱います。「肌の範囲を表示」で確認できます"), 5000);
+        return;
+    }
     const QImage& a = s_->last;
     double sum[3] = {0, 0, 0};
     int n = 0;
@@ -1907,6 +1975,25 @@ void MainWindow::runScriptedTest(const QString& prefix) {
         }
         std::fflush(stdout);
     };
+    if (qEnvironmentVariableIsSet("RD_TEST_SKIN")) {
+        QTimer::singleShot(5000, this, [this, prefix] {
+            emit panel_->skinAutoRequested(2);
+            std::printf("skin: hue %.0f sat %.0f lum %.0f uni %.0f/%.0f/%.0f center %.0f %.2f\n", s_->params.skinHue, s_->params.skinSat,
+                        s_->params.skinLum, s_->params.skinUniHue, s_->params.skinUniSat, s_->params.skinUniLum, s_->params.skinCenterHue,
+                        s_->params.skinCenterSat);
+            std::fflush(stdout);
+            QTimer::singleShot(2500, this, [this, prefix] {
+                grab().save(prefix + "_skin1.png");
+                for (auto* cb : panel_->findChildren<QCheckBox*>())
+                    if (cb->text() == QStringLiteral("肌の範囲を表示")) cb->setChecked(true);
+                QTimer::singleShot(2500, this, [this, prefix] {
+                    grab().save(prefix + "_skin2.png");
+                    QApplication::quit();
+                });
+            });
+        });
+        return;
+    }
     if (qEnvironmentVariableIsSet("RD_TEST_LENS")) {
         QTimer::singleShot(5000, this, [this, prefix] {
             for (auto* cb : panel_->findChildren<QComboBox*>())
