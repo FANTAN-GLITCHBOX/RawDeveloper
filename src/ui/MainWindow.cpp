@@ -175,6 +175,16 @@ QString geomKey(const Params& p) {
 
 std::shared_ptr<LoadedRaw> loadPhoto(const QString& path, bool half) { return loadAny(path, half); }
 
+namespace {
+QString gGpuRenderer, gGpuWhy;
+}
+void MainWindow::setGpuStatus(const QString& renderer, const QString& why) {
+    gGpuRenderer = renderer;
+    gGpuWhy = why;
+}
+QString MainWindow::gpuRenderer() { return gGpuRenderer; }
+QString MainWindow::gpuWhy() { return gGpuWhy; }
+
 MainWindow::MainWindow() {
     setWindowTitle(QStringLiteral("RawDeveloper"));
     resize(1600, 980);
@@ -284,6 +294,13 @@ void MainWindow::buildUi() {
     undoBtn_ = new QPushButton(QStringLiteral("元に戻す"));
     undoBtn_->hide();
     statusBar()->addPermanentWidget(undoBtn_);
+    {
+        auto* gl = new QLabel(gGpuRenderer.isEmpty() ? QStringLiteral("CPU で処理") : QStringLiteral("GPU：") + gGpuRenderer);
+        gl->setToolTip(gGpuRenderer.isEmpty() ? QStringLiteral("GPU を使っていません：") + gGpuWhy
+                                              : QStringLiteral("現像の中心部分を GPU で処理しています（環境設定で切り替え）"));
+        gl->setStyleSheet("color:#8c8c8c; padding: 0 6px;");
+        statusBar()->addPermanentWidget(gl);
+    }
     connect(undoBtn_, &QPushButton::clicked, this, &MainWindow::undoBatch);
     undoTimer_.setSingleShot(true);
     connect(&undoTimer_, &QTimer::timeout, undoBtn_, &QWidget::hide);

@@ -2,6 +2,7 @@
 // 現像パイプライン（Python 版 engine/pipeline.py の移植）
 //  リニア → WB → 露出 → ガンマ → トーン LUT → カラーホイール → 彩度 → HSL → ディテール → 回転・切り抜き
 #include <array>
+#include <memory>
 #include <cstdint>
 #include <vector>
 
@@ -33,6 +34,9 @@ struct DevelopOptions {
     PixelMap map;                       // 画素 → 元画像の正規化座標（dx=0 なら画像全体とみなす）
     PatchFetch fetch;                   // スポット修復のコピー元を元画像から取る（部分現像のとき）
 };
+
+// レンズ補正済みの画像（同じ画像・同じ設定なら使い回す）
+std::shared_ptr<const ImageF> cachedLens(const ImageF& src, const Params& p, const LensInfo* lens);
 
 // 画像のノイズ量（同じ画像なら測った結果を使い回す）
 NoiseLevel noiseOf(const ImageF& img);

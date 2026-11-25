@@ -39,7 +39,7 @@ public:
     void accept() override;
 
 private:
-    QCheckBox *autoAdv_, *writeFiles_, *xmpRaw_, *wheel_, *camProfile_;
+    QCheckBox *autoAdv_, *writeFiles_, *xmpRaw_, *wheel_, *camProfile_, *gpu_;
     QComboBox* propagate_;
 };
 

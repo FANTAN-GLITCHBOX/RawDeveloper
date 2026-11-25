@@ -1,6 +1,10 @@
 #include <QApplication>
 #include <QFileInfo>
 #include <QSettings>
+#include <memory>
+
+#include "engine/Gpu.h"
+#include "gpu/GlBackend.h"
 #include <QTimer>
 
 #include "engine/Lens.h"
@@ -13,6 +17,19 @@ int main(int argc, char* argv[]) {
     QApplication::setApplicationName("RawDeveloper");
     rd::theme::apply(app);
     rd::LensDb::setDataDirs({(QCoreApplication::applicationDirPath() + "/lensfun").toStdString()});
+    // GPU（OpenGL 4.3）。使えなければ CPU のまま
+    std::unique_ptr<rd::GlBackend> gpu;
+    {
+        const QByteArray env = qgetenv("RD_GPU");
+        QString why;
+        if (env != "0" && QSettings().value("develop/gpu", true).toBool()) {
+            gpu.reset(rd::GlBackend::create(env == "soft", &why));
+            if (gpu) rd::setGpuBackend(gpu.get());
+        } else {
+            why = QStringLiteral("環境設定でオフ");
+        }
+        rd::MainWindow::setGpuStatus(gpu ? gpu->renderer() : QString(), why);
+    }
     rd::MainWindow w;
     w.show();
     const QString arg = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
@@ -31,5 +48,7 @@ int main(int argc, char* argv[]) {
             QApplication::quit();
         });
     }
-    return app.exec();
+    const int rc = app.exec();
+    rd::setGpuBackend(nullptr);
+    return rc;
 }

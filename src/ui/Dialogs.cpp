@@ -222,6 +222,8 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent) {
     propagate_->setCurrentIndex(std::max(0, propagate_->findData(st.value("rate/propagate", "ask"))));
     camProfile_ = new QCheckBox(QStringLiteral("新しく開く RAW は「カメラに合わせる」（カメラの JPEG と同じくらいの明るさと色）から始める"));
     camProfile_->setChecked(st.value("develop/camera_profile", true).toBool());
+    gpu_ = new QCheckBox(QStringLiteral("GPU で処理する（次に起動したときから。速くなります）"));
+    gpu_->setChecked(st.value("develop/gpu", true).toBool());
     wheel_ = new QCheckBox(QStringLiteral("マウスホイールでスライダー・数値を変更する"));
     wheel_->setChecked(st.value("ui/wheel_adjust", true).toBool());
     f->addRow(QString(), autoAdv_);
@@ -229,6 +231,7 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent) {
     f->addRow(QString(), xmpRaw_);
     f->addRow(QStringLiteral("元の写真の★を変えたとき\n書き出したファイルにも"), propagate_);
     f->addRow(QString(), camProfile_);
+    f->addRow(QString(), gpu_);
     f->addRow(QString(), wheel_);
     auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(bb, &QDialogButtonBox::accepted, this, &SettingsDialog::accept);
@@ -244,6 +247,7 @@ void SettingsDialog::accept() {
     st.setValue("rate/propagate", propagate_->currentData());
     st.setValue("ui/wheel_adjust", wheel_->isChecked());
     st.setValue("develop/camera_profile", camProfile_->isChecked());
+    st.setValue("develop/gpu", gpu_->isChecked());
     QDialog::accept();
 }
 

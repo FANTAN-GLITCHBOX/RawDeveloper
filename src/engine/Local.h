@@ -62,6 +62,7 @@ public:
     void eval(int x, int y, const float disp[3], float* out) const;
     const LocalMask& mask(int i) const { return *masks_[i]; }
     int slotOf(int paramIndex) const;  // p.masks の番号 → ここでの番号（無ければ -1）
+    const std::vector<float>& brushPlane(int i) const { return brush_[i]; }  // brush 以外は空
 
 private:
     const Params& p_;

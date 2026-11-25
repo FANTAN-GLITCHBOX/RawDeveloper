@@ -74,6 +74,9 @@ struct RoiResult {
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
+    static void setGpuStatus(const QString& renderer, const QString& why);
+    static QString gpuRenderer();
+    static QString gpuWhy();
     MainWindow();
     void openFile(const QString& path);
     void openFolder(const QString& folder, const QString& select = {});

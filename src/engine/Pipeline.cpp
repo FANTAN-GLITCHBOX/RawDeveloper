@@ -1,5 +1,7 @@
 #include "engine/Pipeline.h"
 #include "engine/Skin.h"
+#include "engine/Gpu.h"
+#include <atomic>
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -298,6 +300,15 @@ std::pair<double, double> rotatedRectMaxArea(double w, double h, double angle) {
 }
 
 namespace {
+GpuBackend* gGpu = nullptr;
+std::atomic<bool> gGpuOn{true};
+}  // namespace
+void setGpuBackend(GpuBackend* b) { gGpu = b; }
+GpuBackend* gpuBackend() { return gGpu; }
+void setGpuEnabled(bool on) { gGpuOn = on; }
+bool gpuEnabled() { return gGpuOn.load(); }
+
+namespace {
 // 同じ画像のノイズ量・ノイズ低減の結果を覚えておく（プレビューでスライダーを離すたびに作り直さないように）
 // アドレスは別の画像で使い回されることがあるので、中身の指紋も比べる
 std::uint64_t fingerprint(const ImageF& img) {
@@ -358,6 +369,40 @@ std::shared_ptr<const ImageF> cachedDenoise(const ImageF& src, const ImageF& len
 }
 }  // namespace
 
+namespace {
+// レンズ補正の結果も覚えておく（スライダーを動かすたびに作り直さない）
+struct LensCache {
+    std::uint64_t fp = 0;
+    const float* ptr = nullptr;
+    int w = 0, h = 0;
+    QByteArray key;
+    std::shared_ptr<const ImageF> img;
+};
+LensCache gLens[2];
+int gLensNext = 0;
+}  // namespace
+
+std::shared_ptr<const ImageF> cachedLens(const ImageF& src, const Params& p, const LensInfo* lens) {
+    QJsonObject k;
+    k["lens"] = p.toJson().value("lens");
+    k["el"] = p.enabled.lens;
+    k["auto"] = lens ? QString::fromStdString(lens->autoKey) + QString("/%1/%2/%3").arg(lens->crop).arg(lens->focal).arg(lens->aperture)
+                     : QString();
+    const QByteArray key = QJsonDocument(k).toJson(QJsonDocument::Compact);
+    const std::uint64_t fp = fingerprint(src);
+    {
+        std::lock_guard<std::mutex> lk(gNrMutex);
+        for (auto& c : gLens)
+            if (c.fp == fp && c.ptr == src.data.data() && c.w == src.width && c.h == src.height && c.key == key) return c.img;
+    }
+    static const LensInfo none;
+    auto out = std::make_shared<ImageF>(lensRemapRegion(src, p, lens ? *lens : none, 0, 0, src.width, src.height));
+    std::lock_guard<std::mutex> lk(gNrMutex);
+    gLens[gLensNext] = {fp, src.data.data(), src.width, src.height, key, out};
+    gLensNext = (gLensNext + 1) % 2;
+    return out;
+}
+
 NoiseLevel noiseOf(const ImageF& img) {
     const std::uint64_t fp = fingerprint(img);
     {
@@ -377,11 +422,9 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
     ImageF lensed;
     const bool useLens = lensActive(p, o.lens) || (p.enabled.lens && (std::abs(p.lensManualDistortion) > 0.5f ||
                                                                      std::abs(p.lensManualVignetting) > 0.5f));
-    if (useLens) {
-        static const LensInfo none;
-        lensed = lensRemapRegion(linIn, p, o.lens ? *o.lens : none, 0, 0, linIn.width, linIn.height);
-    }
-    const ImageF* linp = useLens ? &lensed : &linIn;
+    std::shared_ptr<const ImageF> lensedC;
+    if (useLens) lensedC = cachedLens(linIn, p, o.lens);
+    const ImageF* linp = useLens ? lensedC.get() : &linIn;
     // ノイズ低減（トーン調整の前に。リニアの √ 空間で）
     std::shared_ptr<const ImageF> denoised;
     if (o.detail && denoiseActive(p)) {
@@ -471,6 +514,37 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
     const int showSlot = masks && p.showMaskIndex >= 0 ? masks->slotOf(p.showMaskIndex) : -1;
     std::vector<float> showVals(showSlot >= 0 ? size_t(w) * h : 0);
 
+    // GPU があれば、ここから肌の空間処理・シャープまでをまとめて GPU で
+    bool gpuDone = false;
+    if (gpuEnabled() && gpuBackend()) {
+        MainStage st;
+        st.lin = &lin;
+        st.p = &p;
+        for (int c = 0; c < 3; ++c) st.gains[c] = gains[c];
+        st.camMat = camMat;
+        st.tab = &tab;
+        st.sScale = sScale;
+        st.sat = sat;
+        st.vib = vib;
+        st.skinTab = &skinTab;
+        st.hsl = hsl;
+        st.hasHue = hasHue;
+        st.hasSat = hasSat;
+        st.hasLum = hasLum;
+        st.tHue = &tHue;
+        st.tSat = &tSat;
+        st.tLum = &tLum;
+        st.skin = skin;
+        st.masks = masks.get();
+        st.map = map;
+        st.showSlot = showSlot;
+        st.showVals = &showVals;
+        st.skinSpatial = o.detail && p.enabled.skin && (p.skinUniLum > 0 || p.skinSmooth > 0);
+        st.detail = o.detail && p.enabled.detail && p.sharpenAmount > 0 && p.sharpenRadius * o.scale >= 0.3f;
+        st.scale = o.scale;
+        gpuDone = gpuBackend()->runMain(st, g);
+    }
+    if (!gpuDone) {
     parallelFor(h, [&](int y0, int y1) {
         float mv[32];
         for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
@@ -535,6 +609,7 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
         applyDetail(g, p, o.scale);
         for (float& x : g.data) x = std::clamp(x, 0.0f, 1.0f);
     }
+    }  // !gpuDone
     if (p.skinMaskView) skinMaskOverlay(g, p);
     if (showSlot >= 0) {
         // 選んでいるマスクの範囲を赤く重ねる

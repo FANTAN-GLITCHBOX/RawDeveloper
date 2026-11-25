@@ -10,7 +10,7 @@ if(MSVC)
   add_compile_options(/utf-8 /W3 /permissive-)
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent Sql)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent Sql OpenGL)
 find_package(TIFF REQUIRED)
 find_package(ZLIB REQUIRED)
 
@@ -63,6 +63,7 @@ add_library(rdengine STATIC
     src/engine/Skin.h src/engine/Skin.cpp
     src/engine/Profile.h src/engine/Profile.cpp
     src/engine/Local.h src/engine/Local.cpp
+    src/engine/Gpu.h
   src/engine/Auto.h src/engine/Auto.cpp
   src/engine/Lens.h src/engine/Lens.cpp
   src/engine/RawLoader.h src/engine/RawLoader.cpp
@@ -82,6 +83,14 @@ add_library(rdcore STATIC
     src/core/CameraRef.h src/core/CameraRef.cpp)
 target_link_libraries(rdcore PUBLIC rdengine Qt6::Gui Qt6::Sql TIFF::TIFF ZLIB::ZLIB)
 
+# GPU（OpenGL 4.3 コンピュートシェーダー）
+add_library(rdgpu STATIC src/gpu/GlBackend.h src/gpu/GlBackend.cpp)
+target_include_directories(rdgpu PUBLIC src)
+target_link_libraries(rdgpu PUBLIC rdengine Qt6::Gui Qt6::OpenGL)
+
+add_executable(rd_gputest tests/gpu_test.cpp)
+target_link_libraries(rd_gputest PRIVATE rdgpu rdcore)
+
 # アプリ本体
 qt_add_executable(RawDeveloper WIN32
   src/main.cpp
@@ -95,7 +104,7 @@ qt_add_executable(RawDeveloper WIN32
     src/ui/MainWindowLocal.cpp
     src/ui/Library.h src/ui/Library.cpp src/ui/Dialogs.h src/ui/Dialogs.cpp src/ui/Batch.h src/ui/Batch.cpp
 )
-target_link_libraries(RawDeveloper PRIVATE rdcore rdengine Qt6::Widgets Qt6::Concurrent)
+target_link_libraries(RawDeveloper PRIVATE rdcore rdengine rdgpu Qt6::Widgets Qt6::Concurrent)
 
 install(TARGETS RawDeveloper RUNTIME DESTINATION .)
 
