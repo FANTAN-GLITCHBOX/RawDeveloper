@@ -13,6 +13,7 @@
 #include "engine/Lens.h"
 #include "engine/Params.h"
 #include "engine/RawLoader.h"
+#include "ui/Batch.h"
 #include "ui/Library.h"
 #include "ui/Viewer.h"
 
@@ -24,6 +25,7 @@ class QActionGroup;
 class QStackedWidget;
 class QDockWidget;
 class QAction;
+class QPushButton;
 
 namespace rd {
 
@@ -124,6 +126,13 @@ private:
     void toggleFullscreen();
     // 書き出し
     void exportDialog();
+    void copySettings(bool choose);
+    void pasteSettings();
+    void pastePrevious();
+    void batchAuto();
+    void runBatch(std::vector<BatchJob> jobs, const QString& title, bool silent);
+    void undoBatch();
+    Params jobResult(const BatchJob& j, const Params& cur, const LoadedRaw& src) const;
     void storeEditedThumb();
     void setCompareTarget(std::optional<Params> p, const QString& label);
     Params makeBeforeParams(const Params& p) const;
@@ -179,7 +188,19 @@ private:
     std::optional<CropRect> angleBase_;  // 角度を変え始めたときの枠（角度を戻すと枠も元に戻せるように）
     QTimer angleTimer_;   // キーで角度を変えたあと、離して 0.5 秒で履歴に 1 件だけ記録
     QString folder_;
+    // 調整のコピー・貼り付け
     std::optional<Params> clipboard_;
+    QStringList clipGroups_;
+    QString clipSrc_;
+    double clipLum_ = -1;  // コピー元の明るさ（露出をそろえるとき）
+    bool clipMatch_ = false;
+    QString prevPath_;     // ひとつ前に開いていた写真
+    QAction* syncAct_ = nullptr;
+    std::vector<BatchJob> batchQueue_;
+    bool batchRunning_ = false;
+    std::vector<std::pair<QString, std::optional<QByteArray>>> undoBackup_;
+    QPushButton* undoBtn_ = nullptr;
+    QTimer undoTimer_;
     std::optional<Params> cropBackup_;
 };
 

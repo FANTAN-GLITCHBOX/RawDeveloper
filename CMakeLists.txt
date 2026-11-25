@@ -76,7 +76,7 @@ qt_add_executable(RawDeveloper WIN32
   src/ui/Viewer.h src/ui/Viewer.cpp
   src/ui/DevelopPanel.h src/ui/DevelopPanel.cpp
   src/ui/MainWindow.h src/ui/MainWindow.cpp
-    src/ui/Library.h src/ui/Library.cpp src/ui/Dialogs.h src/ui/Dialogs.cpp
+    src/ui/Library.h src/ui/Library.cpp src/ui/Dialogs.h src/ui/Dialogs.cpp src/ui/Batch.h src/ui/Batch.cpp
 )
 target_link_libraries(RawDeveloper PRIVATE rdcore rdengine Qt6::Widgets Qt6::Concurrent)
 

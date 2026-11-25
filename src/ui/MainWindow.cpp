@@ -52,6 +52,7 @@
 #include "engine/Auto.h"
 #include "engine/Color.h"
 #include "engine/Pipeline.h"
+#include "ui/Batch.h"
 #include "ui/DevelopPanel.h"
 #include "ui/Dialogs.h"
 #include "ui/Library.h"
@@ -168,6 +169,8 @@ QString geomKey(const Params& p) {
 
 }  // namespace
 
+std::shared_ptr<LoadedRaw> loadPhoto(const QString& path, bool half) { return loadAny(path, half); }
+
 MainWindow::MainWindow() {
     setWindowTitle(QStringLiteral("RawDeveloper"));
     resize(1600, 980);
@@ -264,6 +267,22 @@ void MainWindow::buildUi() {
     film_->setModel(proxy_);
     film_->setSelectionModel(grid_->selectionModel());
     connect(film_, &ThumbView::middleClicked, this, &MainWindow::copyFromOther);
+    film_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(film_, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        QMenu m;
+        m.addAction(QStringLiteral("調整をコピー"), this, [this] { copySettings(false); });
+        m.addAction(QStringLiteral("項目を選んで調整をコピー…"), this, [this] { copySettings(true); });
+        m.addAction(QStringLiteral("調整を貼り付け"), this, [this] { pasteSettings(); })->setEnabled(clipboard_.has_value());
+        m.addAction(QStringLiteral("前の写真と同じ調整にする"), this, [this] { pastePrevious(); });
+        m.addAction(QStringLiteral("まとめて自動調整"), this, [this] { batchAuto(); });
+        m.exec(film_->viewport()->mapToGlobal(pos));
+    });
+    undoBtn_ = new QPushButton(QStringLiteral("元に戻す"));
+    undoBtn_->hide();
+    statusBar()->addPermanentWidget(undoBtn_);
+    connect(undoBtn_, &QPushButton::clicked, this, &MainWindow::undoBatch);
+    undoTimer_.setSingleShot(true);
+    connect(&undoTimer_, &QTimer::timeout, undoBtn_, &QWidget::hide);
     v->addWidget(film_);
 
     stack_ = new QStackedWidget;
@@ -294,6 +313,11 @@ void MainWindow::buildUi() {
         m.addAction(QStringLiteral("フラグなし"), this, [this] { rate([](PhotoMark& k) { k.flag = 0; }, QStringLiteral("フラグなし")); });
         m.addSeparator();
         m.addAction(QStringLiteral("書き出したファイル／元の写真…"), this, &MainWindow::showLinks);
+        m.addSeparator();
+        m.addAction(QStringLiteral("調整をコピー"), this, [this] { copySettings(false); });
+        m.addAction(QStringLiteral("項目を選んで調整をコピー…"), this, [this] { copySettings(true); });
+        m.addAction(QStringLiteral("調整を貼り付け"), this, [this] { pasteSettings(); })->setEnabled(clipboard_.has_value());
+        m.addAction(QStringLiteral("まとめて自動調整"), this, [this] { batchAuto(); });
         m.exec(grid_->viewport()->mapToGlobal(pos));
     });
     connect(&scanWatcher_, &QFutureWatcher<std::vector<PhotoItem>>::finished, this, &MainWindow::folderScanned);
@@ -430,17 +454,18 @@ void MainWindow::buildActions() {
         if (s_ && s_->historyPos + 1 < int(s_->history.size())) jumpHistory(s_->historyPos + 1);
     });
     edit->addSeparator();
-    add(edit, QStringLiteral("調整をコピー"), QKeySequence("Ctrl+Shift+C"), [this] {
-        if (s_) { clipboard_ = s_->params; statusBar()->showMessage(QStringLiteral("調整をコピーしました"), 2500); }
+    add(edit, QStringLiteral("調整をコピー"), QKeySequence("Ctrl+C"), [this] { copySettings(false); });
+    add(edit, QStringLiteral("項目を選んで調整をコピー…"), QKeySequence("Ctrl+Shift+C"), [this] { copySettings(true); });
+    add(edit, QStringLiteral("調整を貼り付け（選んでいる写真すべて）"), QKeySequence("Ctrl+V"), [this] { pasteSettings(); });
+    add(edit, QStringLiteral("前の写真と同じ調整にする"), QKeySequence("Ctrl+Alt+V"), [this] { pastePrevious(); });
+    syncAct_ = add(edit, QStringLiteral("同期（スライダーの変更を選んでいる写真すべてに反映）"), QKeySequence(), [this] {
+        statusBar()->showMessage(syncAct_->isChecked() ? QStringLiteral("同期オン：選んでいる写真すべてに反映します")
+                                                       : QStringLiteral("同期オフ"), 3000);
     });
-    add(edit, QStringLiteral("調整をペースト（切り抜き以外）"), QKeySequence("Ctrl+Shift+V"), [this] {
-        if (!s_ || !clipboard_) return;
-        Params p = *clipboard_;
-        p.cropX = s_->params.cropX; p.cropY = s_->params.cropY; p.cropW = s_->params.cropW;
-        p.cropH = s_->params.cropH; p.cropAngle = s_->params.cropAngle; p.cropAspect = s_->params.cropAspect;
-        applyParams(p, true, QStringLiteral("ペースト"), true);
-    });
+    syncAct_->setCheckable(true);
+    edit->addSeparator();
     add(edit, QStringLiteral("自動調整"), QKeySequence("Ctrl+U"), [this] { autoAdjust(100, false); });
+    add(edit, QStringLiteral("選んだ写真をまとめて自動調整"), QKeySequence("Ctrl+Shift+U"), [this] { batchAuto(); });
     add(edit, QStringLiteral("すべての調整をリセット"), QKeySequence("Ctrl+Shift+R"), [this] {
         if (s_) applyParams(s_->isRaw ? Params::defaults() : Params::defaultsForImage(), true, QStringLiteral("すべてリセット"), true);
     });
@@ -587,6 +612,8 @@ void MainWindow::buildActions() {
         QMessageBox::information(this, QStringLiteral("操作一覧"), QStringLiteral(
             "<b>評価</b><br>0〜5：★　[ ]：★を増減　6〜9：ラベル（赤・黄・緑・青）、紫はメニュー<br>"
             "P：採用　X：除外　U：フラグなし　G：ライブラリ　D / Enter：現像　F：全画面で選別<br><br>"
+            "<b>調整のコピー</b><br>Ctrl+C：コピー　Ctrl+Shift+C：項目を選んでコピー　Ctrl+V：選んでいる写真すべてに貼り付け<br>"
+            "Ctrl+Alt+V：前の写真と同じ調整　Ctrl+Shift+U：選んだ写真をまとめて自動調整　編集メニュー「同期」：変更を選択中すべてに反映<br><br>"
             "<b>調整（Resolve 風）</b><br>"
             "数値の上を左右ドラッグ：増減（Ctrl：微調整／Shift：粗調整）<br>"
             "ダブルクリック：リセット　クリック：数値入力（+=0.3 で相対）<br>"
@@ -755,6 +782,7 @@ void MainWindow::showLibInfo(const QString& path) {
 void MainWindow::openFile(const QString& path) {
     if (s_ && s_->path == path) return;
     flushSave();
+    if (s_) prevPath_ = s_->path;
     panel_->cropButton()->setChecked(false);
     s_ = std::make_unique<Session>();
     s_->path = path;
@@ -1013,7 +1041,26 @@ void MainWindow::applyParams(const Params& p, bool final, const QString& desc, b
     if (final) {
         dragging_ = false;
         scopes_->endGhost();
+        const Params before = s_->history[s_->historyPos].second;
         pushHistory(desc);
+        // 同期：変わった項目だけを選んでいるほかの写真へ
+        if (syncAct_ && syncAct_->isChecked()) {
+            const QStringList keys = changedKeys(before, p);
+            QStringList others = selectedPaths();
+            others.removeAll(s_->path);
+            if (!keys.isEmpty() && !others.isEmpty()) {
+                std::vector<BatchJob> jobs;
+                for (const QString& o : others) {
+                    BatchJob j;
+                    j.mode = BatchJob::Sync;
+                    j.path = o;
+                    j.src = p;
+                    j.keys = keys;
+                    jobs.push_back(j);
+                }
+                runBatch(std::move(jobs), QStringLiteral("同期"), true);
+            }
+        }
         saveTimer_.start(400);
     }
     if (updatePanel) panel_->setParams(p, s_->asShotTT);
@@ -1439,6 +1486,270 @@ void MainWindow::toggleFullscreen() {
     for (auto* d : docks_) d->setVisible(developMode_ && !isFullScreen());
 }
 
+// ================================================================ copy / paste / batch
+
+void MainWindow::copySettings(bool choose) {
+    QString src;
+    Params p;
+    if (developMode_ && s_ && s_->src) {
+        flushSave();
+        src = s_->path;
+        p = s_->params;
+    } else {
+        src = currentPath();
+        if (src.isEmpty()) return;
+        p = readParams(src);
+    }
+    if (choose) {
+        CopyDialog d(this);
+        if (d.exec() != QDialog::Accepted) return;
+    }
+    QSettings st;
+    clipboard_ = p;
+    clipGroups_ = st.value("paste/groups", defaultPasteGroups()).toStringList();
+    clipMatch_ = st.value("paste/match_exposure", false).toBool();
+    clipSrc_ = src;
+    clipLum_ = -1;
+    if (s_ && s_->path == src && s_->preview) clipLum_ = photoLuminance(*s_->preview, wbFor(p, s_->src->asShotGains));
+    statusBar()->showMessage(QStringLiteral("調整をコピーしました（%1 項目）。Ctrl＋V で選んでいる写真に貼り付けます")
+                                 .arg(clipGroups_.size()), 4000);
+}
+
+Params MainWindow::jobResult(const BatchJob& j, const Params& cur, const LoadedRaw& src) const {
+    switch (j.mode) {
+    case BatchJob::Auto: {
+        const ImageF prev = downscale(src.linear, kPreviewEdge);
+        return autoParams(prev, src.asShotGains, 100, cur, false, isRawPhoto(j.path) ? &src.meta : nullptr, nullptr,
+                          src.cameraRef.width > 0 ? &src.cameraRef : nullptr);
+    }
+    case BatchJob::Thumb:
+        return cur;
+    default: {
+        Params np = copyKeys(cur, j.src, j.keys);
+        if (j.matchExposure && j.srcLum > 0 && j.keys.contains("exposure") && !src.linear.data.empty()) {
+            const double tl = photoLuminance(src.linear, wbFor(np, src.asShotGains));
+            if (tl > 0) np.exposure = float(std::round(std::clamp(j.src.exposure + std::log2(j.srcLum / tl), -5.0, 5.0) * 100) / 100);
+        }
+        return np;
+    }
+    }
+}
+
+void MainWindow::pasteSettings() {
+    if (!clipboard_) {
+        statusBar()->showMessage(QStringLiteral("先に Ctrl＋C で調整をコピーしてください"), 3000);
+        return;
+    }
+    QStringList targets = selectedPaths();
+    targets.removeAll(clipSrc_);
+    if (targets.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("貼り付ける写真を選んでください（コピー元には貼り付けません）"), 3000);
+        return;
+    }
+    QStringList keys;
+    for (const auto& g : pasteGroups())
+        if (clipGroups_.contains(g.id)) keys << g.keys;
+    keys.removeDuplicates();
+    std::vector<BatchJob> jobs;
+    for (const QString& t : targets) {
+        BatchJob j;
+        j.mode = BatchJob::Paste;
+        j.path = t;
+        j.src = *clipboard_;
+        j.keys = keys;
+        j.matchExposure = clipMatch_;
+        j.srcLum = clipLum_;
+        jobs.push_back(j);
+    }
+    // 露出をそろえるのにコピー元の明るさが必要なら、先に測る
+    if (clipMatch_ && clipLum_ < 0) {
+        auto f = loadPhoto(clipSrc_, true);
+        if (f->error.empty()) clipLum_ = photoLuminance(f->linear, wbFor(*clipboard_, f->asShotGains));
+        for (auto& j : jobs) j.srcLum = clipLum_;
+    }
+    runBatch(std::move(jobs), QStringLiteral("調整を貼り付け"), false);
+}
+
+void MainWindow::pastePrevious() {
+    if (!s_ || !s_->src || prevPath_.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("前に開いた写真がありません"), 3000);
+        return;
+    }
+    bool ex = false;
+    const Params prev = readParams(prevPath_, &ex);
+    if (!ex) {
+        statusBar()->showMessage(QStringLiteral("前の写真（%1）はまだ調整されていません").arg(QFileInfo(prevPath_).fileName()), 3000);
+        return;
+    }
+    QStringList groups;
+    for (const auto& g : pasteGroups())
+        if (QString(g.id) != "crop") groups << g.id;
+    applyParams(mergeGroups(s_->params, prev, groups), true,
+                QStringLiteral("前の写真と同じ：") + QFileInfo(prevPath_).fileName(), true);
+}
+
+void MainWindow::batchAuto() {
+    const QStringList targets = selectedPaths();
+    if (targets.isEmpty()) return;
+    std::vector<BatchJob> jobs;
+    for (const QString& t : targets) {
+        BatchJob j;
+        j.mode = BatchJob::Auto;
+        j.path = t;
+        jobs.push_back(j);
+    }
+    runBatch(std::move(jobs), QStringLiteral("まとめて自動調整"), false);
+}
+
+void MainWindow::runBatch(std::vector<BatchJob> jobs, const QString& title, bool silent) {
+    if (jobs.empty()) return;
+    if (batchRunning_) {
+        // 前の処理が終わってから（同じ写真への書き込みが重ならないように）
+        QTimer::singleShot(200, this, [this, jobs = std::move(jobs), title, silent]() mutable { runBatch(std::move(jobs), title, silent); });
+        return;
+    }
+    // 開いている写真はその場で（履歴にも残す）
+    const bool user = jobs.front().mode == BatchJob::Paste || jobs.front().mode == BatchJob::Auto;
+    if (user) {
+        flushSave();
+        undoBackup_.clear();
+    }
+    std::vector<BatchJob> rest;
+    int doneHere = 0;
+    for (auto& j : jobs) {
+        if (user) {
+            QFile f(j.path + ".rdev");
+            undoBackup_.push_back({j.path, f.open(QIODevice::ReadOnly) ? std::optional<QByteArray>(f.readAll()) : std::nullopt});
+        }
+        if (s_ && s_->src && j.path == s_->path && j.mode != BatchJob::Thumb) {
+            Params np;
+            if (j.mode == BatchJob::Auto) {
+                AutoInfo info;
+                np = autoParams(*s_->preview, s_->src->asShotGains, 100, s_->params, false, s_->isRaw ? &s_->src->meta : nullptr,
+                                &info, s_->src->cameraRef.width > 0 ? &s_->src->cameraRef : nullptr);
+            } else {
+                BatchJob k = j;
+                if (k.matchExposure && k.srcLum > 0) {
+                    np = copyKeys(s_->params, k.src, k.keys);
+                    const double tl = photoLuminance(*s_->preview, wbFor(np, s_->src->asShotGains));
+                    if (tl > 0) np.exposure = float(std::round(std::clamp(k.src.exposure + std::log2(k.srcLum / tl), -5.0, 5.0) * 100) / 100);
+                } else {
+                    np = copyKeys(s_->params, k.src, k.keys);
+                }
+            }
+            const bool sync = syncAct_->isChecked();
+            syncAct_->setChecked(false);  // 貼り付けがさらに同期されないように
+            applyParams(np, true, title, true);
+            syncAct_->setChecked(sync);
+            flushSave();
+            ++doneHere;
+        } else {
+            rest.push_back(j);
+        }
+    }
+    if (rest.empty()) {
+        if (user) {
+            statusBar()->showMessage(QStringLiteral("%1：%2 枚").arg(title).arg(doneHere), 6000);
+            undoBtn_->show();
+            undoTimer_.start(15000);
+        }
+        return;
+    }
+    batchRunning_ = true;
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    QPointer<QProgressDialog> prog;
+    if (!silent && rest.size() >= 2) {
+        prog = new QProgressDialog(title + QStringLiteral("…"), QStringLiteral("中止"), 0, int(rest.size()), this);
+        prog->setWindowModality(Qt::WindowModal);
+        prog->setMinimumDuration(400);
+        connect(prog, &QProgressDialog::canceled, this, [cancel] { *cancel = true; });
+    }
+    auto shared = std::make_shared<std::vector<BatchJob>>(std::move(rest));
+    auto* watcher = new QFutureWatcher<void>(this);
+    QPointer<MainWindow> self(this);
+    watcher->setFuture(QtConcurrent::run([this, shared, cancel, self, prog] {
+        int n = 0;
+        for (const BatchJob& j : *shared) {
+            if (*cancel) break;
+            BatchDone d;
+            d.path = j.path;
+            bool ex = false;
+            const Params cur = readParams(j.path, &ex);
+            auto src = loadPhoto(j.path, true);
+            Params np = cur;
+            if (src->error.empty()) np = jobResult(j, cur, *src);
+            if (j.mode != BatchJob::Thumb) d.ok = writeParams(j.path, np);
+            if (src->error.empty() && (ex || j.mode != BatchJob::Thumb)) d.thumb = renderEditedThumb(j.path, *src, np);
+            ++n;
+            QMetaObject::invokeMethod(self, [this, self, d, n, prog] {
+                if (!self) return;
+                if (PhotoItem* it = model_->item(d.path)) {
+                    if (!it->edited && QFileInfo::exists(d.path + ".rdev")) {
+                        it->edited = true;
+                        Catalog::get().setMark(d.path, PhotoMark{it->rating, it->label, it->flag, true});
+                    }
+                    model_->setThumb(d.path, d.thumb);
+                }
+                if (prog) prog->setValue(n);
+            });
+        }
+        return;
+    }));
+    const int total = int(shared->size()) + doneHere;
+    connect(watcher, &QFutureWatcher<void>::finished, this, [this, watcher, prog, title, silent, user, total, cancel] {
+        watcher->deleteLater();
+        if (prog) prog->deleteLater();
+        batchRunning_ = false;
+        if (silent) {
+            statusBar()->showMessage(QStringLiteral("%1：ほか %2 枚に反映").arg(title).arg(total), 2500);
+            return;
+        }
+        statusBar()->showMessage(QStringLiteral("%1：%2 枚%3").arg(title).arg(total).arg(*cancel ? QStringLiteral("（途中で中止）") : QString()), 8000);
+        if (user) {
+            undoBtn_->show();
+            undoTimer_.start(15000);
+        }
+        if (qEnvironmentVariableIsSet("RD_TEST_SCRIPT")) {
+            std::printf("batch %s: %d\n", title.toUtf8().constData(), total);
+            std::fflush(stdout);
+        }
+    });
+}
+
+void MainWindow::undoBatch() {
+    undoBtn_->hide();
+    if (undoBackup_.empty() || batchRunning_) return;
+    std::vector<BatchJob> thumbs;
+    for (const auto& [path, data] : undoBackup_) {
+        if (data) {
+            QSaveFile f(path + ".rdev");
+            if (f.open(QIODevice::WriteOnly)) {
+                f.write(*data);
+                f.commit();
+            }
+        } else {
+            QFile::remove(path + ".rdev");
+        }
+        if (s_ && s_->path == path) {
+            const Params old = readParams(path);
+            const bool sync = syncAct_->isChecked();
+            syncAct_->setChecked(false);
+            applyParams(old, true, QStringLiteral("貼り付けを取り消し"), true);
+            syncAct_->setChecked(sync);
+            saveTimer_.stop();
+        } else {
+            BatchJob j;
+            j.mode = BatchJob::Thumb;
+            j.path = path;
+            thumbs.push_back(j);
+            if (!data) model_->setThumb(path, QImage());
+        }
+    }
+    statusBar()->showMessage(QStringLiteral("%1 枚を元に戻しました").arg(undoBackup_.size()), 4000);
+    undoBackup_.clear();
+    runBatch(std::move(thumbs), QStringLiteral("サムネイル更新"), true);
+}
+
 // ================================================================ export
 
 void MainWindow::exportDialog() {
@@ -1580,6 +1891,74 @@ void MainWindow::runScriptedTest(const QString& prefix) {
         if (s_ && s_->lens) std::printf("  lens: %s (active %d)\n", s_->lens->status.c_str(), int(lensActive(s_->params, s_->lens.get())));
         std::fflush(stdout);
     };
+    auto dump = [this](const char* tag) {
+        for (int i = 0; i < model_->rowCount(); ++i) {
+            const QString p = model_->itemAt(i)->path;
+            bool ex = false;
+            const Params q = readParams(p, &ex);
+            std::printf("%s %s: rdev %d ev %.2f c %.0f temp %.0f crop %.2f\n", tag, QFileInfo(p).fileName().toUtf8().constData(), int(ex),
+                        q.exposure, q.contrast, q.temp, q.cropW);
+        }
+        std::fflush(stdout);
+    };
+    if (qEnvironmentVariableIsSet("RD_TEST_BATCH")) {
+        auto bsteps = std::make_shared<std::vector<Step>>(std::vector<Step>{
+            {5000, [=, this] {
+                 // 1 枚目を調整してコピー
+                 Params p = s_->params;
+                 p.exposure = 1.0f;
+                 p.contrast = 30;
+                 p.temp = 3000;
+                 p.wbMode = "custom";
+                 p.cropW = 0.5f;
+                 applyParams(p, true, "test", true);
+                 QSettings().setValue("paste/groups", defaultPasteGroups());
+                 QSettings().setValue("paste/match_exposure", true);
+                 copySettings(false);
+                 grid_->selectAll();
+                 pasteSettings();
+             }},
+            {6000, [=, this] {
+                 dump("paste");
+                 undoBatch();
+             }},
+            {5000, [=, this] {
+                 dump("undo");
+                 grid_->selectAll();
+                 batchAuto();
+             }},
+            {9000, [=, this] {
+                 dump("auto");
+                 syncAct_->setChecked(true);
+                 grid_->selectionModel()->select(grid_->model()->index(0, 0), QItemSelectionModel::Select);
+                 grid_->selectAll();
+                 Params p = s_->params;
+                 p.saturation = 25;
+                 applyParams(p, true, "sync", true);
+             }},
+            {6000, [=, this] {
+                 for (int i = 0; i < model_->rowCount(); ++i)
+                     std::printf("sync %s: sat %.0f\n", QFileInfo(model_->itemAt(i)->path).fileName().toUtf8().constData(),
+                                 readParams(model_->itemAt(i)->path).saturation);
+                 shot(1);
+                 setMode(false);
+             }},
+            {1500, [=, this] {
+                 shot(2);
+                 QApplication::quit();
+             }},
+        });
+        auto run = std::make_shared<std::function<void(size_t)>>();
+        *run = [this, bsteps, run](size_t i) {
+            if (i >= bsteps->size()) return;
+            QTimer::singleShot((*bsteps)[i].ms, this, [bsteps, run, i] {
+                (*bsteps)[i].fn();
+                (*run)(i + 1);
+            });
+        };
+        (*run)(0);
+        return;
+    }
     auto steps = std::make_shared<std::vector<Step>>(std::vector<Step>{
         {4000, [=, this] { shot(1); autoAdjust(100, false); }},
         {1500, [=, this] {
