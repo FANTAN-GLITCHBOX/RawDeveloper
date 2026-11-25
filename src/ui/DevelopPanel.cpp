@@ -79,6 +79,22 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
     // ---- 基本補正
     auto* basic = new Section(QStringLiteral("基本補正"));
     {
+        auto* pw = new QWidget;
+        auto* ph = new QHBoxLayout(pw);
+        ph->setContentsMargins(8, 2, 8, 2);
+        auto* pl = new QLabel(QStringLiteral("プロファイル"));
+        pl->setFixedWidth(78);
+        pl->setStyleSheet("color:#8c8c8c; background: transparent;");
+        profile_ = new QComboBox;
+        profile_->addItem(QStringLiteral("カメラに合わせる"), "camera");
+        profile_->addItem(QStringLiteral("標準（補正なし）"), "standard");
+        profile_->setToolTip(QStringLiteral("カメラに合わせる：RAW に入っているカメラの JPEG と同じくらいの明るさと色を下地にします"));
+        connect(profile_, &QComboBox::activated, this, [this](int i) { emit profileChosen(profile_->itemData(i).toString()); });
+        ph->addWidget(pl);
+        ph->addWidget(profile_, 1);
+        basic->add(pw);
+    }
+    {
         auto* wb = new QWidget;
         auto* h = new QHBoxLayout(wb);
         h->setContentsMargins(8, 2, 8, 2);
@@ -462,6 +478,7 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
     rows_["temp"]->setValue(shot ? asShot.first : p_.temp);
     rows_["tint"]->setValue(shot ? asShot.second : p_.tint);
     wbMode_->setCurrentIndex(shot ? 0 : 2);
+    profile_->setCurrentIndex(p_.cameraLook() ? 0 : 1);
     rows_["exposure"]->setValue(p_.exposure);
     rows_["contrast"]->setValue(p_.contrast);
     rows_["highlights"]->setValue(p_.highlights);

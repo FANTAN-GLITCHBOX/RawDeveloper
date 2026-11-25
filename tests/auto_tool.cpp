@@ -11,6 +11,7 @@
 
 #include "core/CameraRef.h"
 #include "engine/Auto.h"
+#include "engine/Profile.h"
 #include "engine/Pipeline.h"
 #include "engine/RawLoader.h"
 
@@ -37,6 +38,8 @@ int main(int argc, char** argv) {
         }
         const rd::ImageF prev = rd::downscale(raw.linear, 900);
         rd::Params base = rd::Params::defaults();
+        const rd::ImageF ref0 = rd::cameraReference(bytes, raw.meta.fullWidth, raw.meta.fullHeight);
+        if (!std::getenv("NO_PROFILE")) rd::matchCamera(raw.linear, raw.asShotGains, ref0, base);
         rd::AutoInfo info;
         const rd::ImageF ref = rd::cameraReference(bytes, raw.meta.fullWidth, raw.meta.fullHeight);
         const bool noCam = std::getenv("NO_CAMERA") != nullptr;
@@ -65,7 +68,7 @@ int main(int argc, char** argv) {
                                  .arg(name).arg(m.iso).arg(qRound(1 / std::max(m.shutter, 1e-4f))).arg(m.aperture)
                                  .arg(m.hasBias ? QString::number(m.exposureBias) : "?").arg(QString::fromStdString(info.scene))
                                  .arg(a.exposure).arg(a.contrast).arg(a.highlights).arg(a.shadows).arg(a.whites).arg(a.blacks)
-                                 .arg(a.vibrance).arg(a.temp).arg(a.tint);
+                                 .arg(a.vibrance).arg(a.temp).arg(a.tint) + QString(" | cam ev %1").arg(base.camExposure);
         p.drawText(6, 26, line);
         p.end();
         sheet.save(out + "/" + QFileInfo(argv[i]).completeBaseName() + ".jpg", "JPG", 85);

@@ -58,6 +58,7 @@ QJsonObject Params::toJson() const {
     o["version"] = version;
     o["processVersion"] = processVersion;
     o["wb"] = QJsonObject{{"mode", wbMode}, {"temp", temp}, {"tint", tint}};
+    o["profile"] = QJsonObject{{"name", profile}, {"exposure", camExposure}, {"matrix", toArr(camMatrix.data(), 9)}};
     o["exposure"] = exposure;
     o["contrast"] = contrast;
     o["highlights"] = highlights;
@@ -105,6 +106,12 @@ Params Params::fromJson(const QJsonObject& o) {
     p.wbMode = wb.value("mode").toString("as_shot");
     p.temp = num(wb, "temp", 5500);
     p.tint = num(wb, "tint", 0);
+    {
+        const QJsonObject pr = o.value("profile").toObject();
+        p.profile = pr.value("name").toString("standard");
+        p.camExposure = num(pr, "exposure", 0);
+        if (pr.value("matrix").toArray().size() == 9) fromArr(pr.value("matrix"), p.camMatrix.data(), 9);
+    }
     p.exposure = num(o, "exposure", 0);
     p.contrast = num(o, "contrast", 0);
     p.highlights = num(o, "highlights", 0);

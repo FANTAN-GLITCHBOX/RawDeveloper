@@ -35,6 +35,9 @@ Params copyKeys(const Params& dst, const Params& src, const QStringList& keys);
 // 中央寄りの明るさ（リニア）の中央値。露出をそろえるときの基準
 double photoLuminance(const ImageF& lin, const std::array<float, 3>& gains);
 
+// まだ調整していない写真の初期値（RAW：ISO からノイズ軽減、カメラの JPEG があれば「カメラに合わせる」）
+Params initialParams(const QString& path, const LoadedRaw& src);
+
 // .rdev の params を読む・書く（★などほかの項目は残す）
 Params readParams(const QString& path, bool* exists = nullptr);
 bool writeParams(const QString& path, const Params& p);

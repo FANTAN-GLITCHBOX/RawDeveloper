@@ -61,6 +61,7 @@ add_library(rdengine STATIC
   src/engine/Pipeline.h src/engine/Pipeline.cpp
     src/engine/Denoise.h src/engine/Denoise.cpp
     src/engine/Skin.h src/engine/Skin.cpp
+    src/engine/Profile.h src/engine/Profile.cpp
   src/engine/Auto.h src/engine/Auto.cpp
   src/engine/Lens.h src/engine/Lens.cpp
   src/engine/RawLoader.h src/engine/RawLoader.cpp

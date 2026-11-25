@@ -46,6 +46,7 @@ signals:
     void autoRequested(float strength, bool wbOnly);
     void skinAutoRequested(int level);  // 1 弱め 2 普通 3 強め
     void skinMaskToggled(bool on);
+    void profileChosen(const QString& name);
     void hoverKey(const QString& key);
     void cropToolToggled(bool on);
     void aspectChanged();
@@ -69,6 +70,7 @@ private:
     std::optional<Enabled> soloBackup_;
     QVBoxLayout* v_ = nullptr;
     QComboBox* wbMode_ = nullptr;
+    QComboBox* profile_ = nullptr;
     QToolButton* wbPick_ = nullptr;
     ScrubField* autoStrength_ = nullptr;
     CurveEditor* curve_ = nullptr;

@@ -148,7 +148,9 @@ struct ToneEval {
         probe.blacks = p.blacks;
         probe.saturation = probe.vibrance = 0;
         const ToneLut lut = toneLut(probe);
-        const float evf = std::pow(2.0f, p.exposure);
+        const float evf = std::pow(2.0f, p.exposure + (base.cameraLook() ? base.camExposure : 0.0f));
+        const bool cm = base.cameraLook();
+        const auto& M = base.camMatrix;
         constexpr float kIdx = (kLutN - 1) / kLutMax;
         constexpr int kBins = 1024;
         std::array<double, kBins> hw{}, hu{};
@@ -157,8 +159,14 @@ struct ToneEval {
         for (size_t i = 0; i < n; ++i) {
             float v[3];
             float vmax = 0;
+            float xin[3];
+            for (int c = 0; c < 3; ++c) xin[c] = img->data[i * 3 + c] * gains[c];
+            if (cm) {
+                const float a = xin[0], b2 = xin[1], d = xin[2];
+                for (int c = 0; c < 3; ++c) xin[c] = M[c * 3] * a + M[c * 3 + 1] * b2 + M[c * 3 + 2] * d;
+            }
             for (int c = 0; c < 3; ++c) {
-                const float x = std::max(img->data[i * 3 + c] * gains[c] * evf, 0.0f);
+                const float x = std::max(xin[c] * evf, 0.0f);
                 const int idx = std::clamp(static_cast<int>(std::pow(x, 1.0f / kGamma) * kIdx), 0, kLutN - 1);
                 v[c] = lut.t[c + 1][idx];
                 vmax = std::max(vmax, v[c]);
@@ -287,7 +295,8 @@ Params autoParams(const ImageF& lin, const std::array<float, 3>& asShot, float s
     auto est = estimateWb(small, asShot);
     // カメラの JPEG があれば、その色に合う WB を求めて推定と混ぜる（カメラの色の判断はかなり確か）
     bool camWb = false;
-    if (est && cameraRef && cameraRef->width > 16) {
+    // プロファイルが「カメラに合わせる」なら色はもう合っているので、ここではしない
+    if (est && cameraRef && cameraRef->width > 16 && !base.cameraLook()) {
         const ImageF t = downscale(small, 160);
         double sc[3] = {0, 0, 0}, so[3] = {0, 0, 0};
         for (int y = 0; y < t.height; ++y)
@@ -318,7 +327,10 @@ Params autoParams(const ImageF& lin, const std::array<float, 3>& asShot, float s
         }
     }
     std::array<float, 3> gains = asShot;
-    if (!est || k <= 0) {
+    if (base.cameraLook() && !wbOnly) {
+        // 「カメラに合わせる」では色はカメラの判断に任せる（WB はいまの設定のまま）
+        gains = wbFor(base, asShot);
+    } else if (!est || k <= 0) {
         p.wbMode = "as_shot";
         p.temp = static_cast<float>(t0);
         p.tint = static_cast<float>(tint0);
@@ -465,6 +477,7 @@ Params autoParams(const ImageF& lin, const std::array<float, 3>& asShot, float s
         }
         te.evPrior = std::clamp(std::log2(sc.highKey ? 0.32 : sc.night ? 0.07 : 0.16) - med, -4.0, 4.0);
         if (sc.night) te.evPrior = std::min(te.evPrior, 1.5);
+        if (base.cameraLook()) te.evPrior -= base.camExposure;  // 下地の明るさは別に掛かる
     }
     Params start = p;
     start.exposure = float(te.evPrior);

@@ -5,6 +5,8 @@
 #include <QJsonObject>
 #include <memory>
 #include <mutex>
+#include <cstring>
+#include <cstdint>
 
 #include <algorithm>
 #include <cmath>
@@ -297,8 +299,22 @@ std::pair<double, double> rotatedRectMaxArea(double w, double h, double angle) {
 
 namespace {
 // 同じ画像のノイズ量・ノイズ低減の結果を覚えておく（プレビューでスライダーを離すたびに作り直さないように）
+// アドレスは別の画像で使い回されることがあるので、中身の指紋も比べる
+std::uint64_t fingerprint(const ImageF& img) {
+    std::uint64_t h = 1469598103934665603ull ^ (std::uint64_t(img.width) << 32 | std::uint32_t(img.height));
+    const size_t n = img.data.size();
+    if (!n) return h;
+    for (int k = 0; k < 512; ++k) {
+        const size_t i = (size_t(k) * 2654435761u + size_t(k) * n / 512) % n;
+        std::uint32_t b;
+        std::memcpy(&b, &img.data[i], 4);
+        h = (h ^ b) * 1099511628211ull;
+    }
+    return h;
+}
 std::mutex gNrMutex;
 struct NoiseCache {
+    std::uint64_t fp = 0;
     const float* ptr = nullptr;
     int w = 0, h = 0;
     NoiseLevel n;
@@ -306,6 +322,7 @@ struct NoiseCache {
 NoiseCache gNoise[4];
 int gNoiseNext = 0;
 struct DenoiseCache {
+    std::uint64_t fp = 0;
     const float* ptr = nullptr;
     int w = 0, h = 0;
     QByteArray key;
@@ -326,29 +343,31 @@ std::shared_ptr<const ImageF> cachedDenoise(const ImageF& src, const ImageF& len
                                             const NoiseLevel* given) {
     const NoiseLevel n = given ? *given : noiseOf(src);
     const QByteArray key = denoiseKey(p, lens, n);
+    const std::uint64_t fp = fingerprint(src);
     {
         std::lock_guard<std::mutex> lk(gNrMutex);
         for (auto& c : gDen)
-            if (c.ptr == src.data.data() && c.w == src.width && c.h == src.height && c.key == key) return c.img;
+            if (c.fp == fp && c.ptr == src.data.data() && c.w == src.width && c.h == src.height && c.key == key) return c.img;
     }
     auto out = std::make_shared<ImageF>(lensed);
     denoise(*out, p, n);
     std::lock_guard<std::mutex> lk(gNrMutex);
-    gDen[gDenNext] = {src.data.data(), src.width, src.height, key, out};
+    gDen[gDenNext] = {fp, src.data.data(), src.width, src.height, key, out};
     gDenNext = (gDenNext + 1) % 2;
     return out;
 }
 }  // namespace
 
 NoiseLevel noiseOf(const ImageF& img) {
+    const std::uint64_t fp = fingerprint(img);
     {
         std::lock_guard<std::mutex> lk(gNrMutex);
         for (auto& c : gNoise)
-            if (c.ptr == img.data.data() && c.w == img.width && c.h == img.height) return c.n;
+            if (c.fp == fp && c.ptr == img.data.data() && c.w == img.width && c.h == img.height) return c.n;
     }
     const NoiseLevel n = estimateNoise(img);
     std::lock_guard<std::mutex> lk(gNrMutex);
-    gNoise[gNoiseNext] = {img.data.data(), img.width, img.height, n};
+    gNoise[gNoiseNext] = {fp, img.data.data(), img.width, img.height, n};
     gNoiseNext = (gNoiseNext + 1) % 4;
     return n;
 }
@@ -374,7 +393,10 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
     ImageF g;
     g.resize(w, h);
     const auto wb = wbFor(p, asShot);
-    const float ev = std::pow(2.0f, p.enabled.basic ? p.exposure : 0.0f);
+    // カメラに合わせたプロファイルの明るさは、基本補正のオン/オフに関係なく下地として掛ける
+    const float ev = std::pow(2.0f, (p.enabled.basic ? p.exposure : 0.0f) + (p.cameraLook() ? p.camExposure : 0.0f));
+    const bool camMat = p.cameraLook();
+    const auto& CM = p.camMatrix;
     const float gains[3] = {wb[0] * ev, wb[1] * ev, wb[2] * ev};
     const ToneLut lut = toneLut(p);
 
@@ -427,9 +449,14 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
 
     parallelFor(h, [&](int y0, int y1) {
         for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
-            float v[3];
+            float v[3], xin[3];
+            for (int c = 0; c < 3; ++c) xin[c] = lin.data[i * 3 + c] * gains[c];
+            if (camMat) {
+                const float a = xin[0], b = xin[1], d = xin[2];
+                for (int c = 0; c < 3; ++c) xin[c] = CM[c * 3] * a + CM[c * 3 + 1] * b + CM[c * 3 + 2] * d;
+            }
             for (int c = 0; c < 3; ++c) {
-                const float x = std::max(lin.data[i * 3 + c] * gains[c], 0.0f);
+                const float x = std::max(xin[c], 0.0f);
                 const int k = std::min(static_cast<int>(std::sqrt(x) * sScale + 0.5f), kTabN - 1);
                 v[c] = tab[c][k];
             }

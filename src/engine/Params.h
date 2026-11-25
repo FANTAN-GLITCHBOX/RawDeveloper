@@ -26,6 +26,11 @@ struct Params {
     // WB
     QString wbMode = "as_shot";  // as_shot | custom
     float temp = 5500, tint = 0;
+    // プロファイル："camera" はカメラの JPEG に合わせた明るさと色（写真ごとに測った値）を下地にする
+    QString profile = "standard";
+    float camExposure = 0;
+    std::array<float, 9> camMatrix{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    bool cameraLook() const { return profile == "camera"; }
     // トーン
     float exposure = 0, contrast = 0, highlights = 0, shadows = 0, whites = 0, blacks = 0;
     float saturation = 0, vibrance = 0;

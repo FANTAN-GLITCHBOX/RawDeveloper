@@ -53,6 +53,7 @@
 #include "core/Xmp.h"
 #include "engine/Auto.h"
 #include "engine/Skin.h"
+#include "engine/Profile.h"
 #include "engine/Color.h"
 #include "engine/Pipeline.h"
 #include "ui/Batch.h"
@@ -393,6 +394,21 @@ void MainWindow::buildUi() {
     });
     connect(panel_->wbPickButton(), &QToolButton::toggled, this, [this](bool on) {
         if (on) panel_->skinPickButton()->setChecked(false);
+    });
+    connect(panel_, &DevelopPanel::profileChosen, this, [this](const QString& name) {
+        if (!s_ || !s_->src) return;
+        Params p = s_->params;
+        if (name == "camera") {
+            if (s_->src->cameraRef.width <= 0 || !matchCamera(s_->src->linear, s_->src->asShotGains, s_->src->cameraRef, p)) {
+                statusBar()->showMessage(QStringLiteral("この写真にはカメラの JPEG が入っていないため、「カメラに合わせる」は使えません"), 6000);
+                panel_->setParams(s_->params, s_->asShotTT);
+                return;
+            }
+            applyParams(p, true, QStringLiteral("プロファイル：カメラに合わせる"), true);
+        } else {
+            p.profile = "standard";
+            applyParams(p, true, QStringLiteral("プロファイル：標準"), true);
+        }
     });
     connect(panel_, &DevelopPanel::skinMaskToggled, this, [this](bool on) {
         if (!s_) return;
@@ -857,8 +873,7 @@ void MainWindow::loaded() {
     if (s_->sidecar.contains("params"))
         s_->params = Params::fromJson(s_->sidecar.value("params").toObject());
     else {
-        s_->params = s_->isRaw ? Params::defaults() : Params::defaultsForImage();
-        if (s_->isRaw) s_->params.nrLuma = defaultLumaNr(src->meta.iso);  // 高感度ほど輝度ノイズ軽減を強めに
+        s_->params = initialParams(s_->path, *src);  // ISO からノイズ軽減、カメラの JPEG に合わせた明るさと色
     }
     s_->history = {{QStringLiteral("読み込み"), s_->params}};
     s_->historyPos = 0;
@@ -1139,6 +1154,12 @@ Params MainWindow::makeBeforeParams(const Params& p) const {
         // 補正前＝撮ったまま。レンズ補正（歪曲・周辺減光・色収差・自動トリミング）は掛けない
         before.enabled.lens = false;
         before.sharpenAmount = before.nrColor = 0;
+    }
+    if (!compareTarget_) {
+        // 補正前も「カメラに合わせる」の下地は同じ（撮ったままの見た目）
+        before.profile = p.profile;
+        before.camExposure = p.camExposure;
+        before.camMatrix = p.camMatrix;
     }
     before.cropX = p.cropX;
     before.cropY = p.cropY;
@@ -1602,7 +1623,8 @@ Params MainWindow::jobResult(const BatchJob& j, const Params& cur, const LoadedR
         Params np = copyKeys(cur, j.src, j.keys);
         if (j.matchExposure && j.srcLum > 0 && j.keys.contains("exposure") && !src.linear.data.empty()) {
             const double tl = photoLuminance(src.linear, wbFor(np, src.asShotGains));
-            if (tl > 0) np.exposure = float(std::round(std::clamp(j.src.exposure + std::log2(j.srcLum / tl), -5.0, 5.0) * 100) / 100);
+            const double base = (j.src.cameraLook() ? j.src.camExposure : 0) - (np.cameraLook() ? np.camExposure : 0);
+            if (tl > 0) np.exposure = float(std::round(std::clamp(j.src.exposure + base + std::log2(j.srcLum / tl), -5.0, 5.0) * 100) / 100);
         }
         return np;
     }
@@ -1706,7 +1728,8 @@ void MainWindow::runBatch(std::vector<BatchJob> jobs, const QString& title, bool
                 if (k.matchExposure && k.srcLum > 0) {
                     np = copyKeys(s_->params, k.src, k.keys);
                     const double tl = photoLuminance(*s_->preview, wbFor(np, s_->src->asShotGains));
-                    if (tl > 0) np.exposure = float(std::round(std::clamp(k.src.exposure + std::log2(k.srcLum / tl), -5.0, 5.0) * 100) / 100);
+                    const double base = (k.src.cameraLook() ? k.src.camExposure : 0) - (np.cameraLook() ? np.camExposure : 0);
+                    if (tl > 0) np.exposure = float(std::round(std::clamp(k.src.exposure + base + std::log2(k.srcLum / tl), -5.0, 5.0) * 100) / 100);
                 } else {
                     np = copyKeys(s_->params, k.src, k.keys);
                 }
@@ -1750,7 +1773,7 @@ void MainWindow::runBatch(std::vector<BatchJob> jobs, const QString& title, bool
             bool ex = false;
             Params cur = readParams(j.path, &ex);
             auto src = loadPhoto(j.path, true);
-            if (!ex && isRawPhoto(j.path) && src->error.empty()) cur.nrLuma = defaultLumaNr(src->meta.iso);
+            if (!ex && src->error.empty()) cur = initialParams(j.path, *src);
             Params np = cur;
             if (src->error.empty()) np = jobResult(j, cur, *src);
             if (j.mode != BatchJob::Thumb) d.ok = writeParams(j.path, np);
@@ -1889,8 +1912,7 @@ void MainWindow::exportDialog() {
                 res.failed << QFileInfo(j.src).fileName() + "：" + QString::fromStdString(f->error);
                 continue;
             }
-            Params p = isRawPhoto(j.src) ? Params::defaults() : Params::defaultsForImage();
-            if (isRawPhoto(j.src)) p.nrLuma = defaultLumaNr(f->meta.iso);
+            Params p = initialParams(j.src, *f);
             QFile sf(j.src + ".rdev");
             if (sf.open(QIODevice::ReadOnly)) {
                 const QJsonObject so = QJsonDocument::fromJson(sf.readAll()).object();

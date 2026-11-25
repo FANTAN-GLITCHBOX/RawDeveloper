@@ -19,6 +19,8 @@
 #include "engine/Color.h"
 #include "engine/Lens.h"
 #include "engine/Pipeline.h"
+#include "engine/Profile.h"
+#include "engine/Denoise.h"
 #include "ui/Library.h"
 
 namespace rd {
@@ -125,6 +127,15 @@ Params readParams(const QString& path, bool* exists) {
     }
     if (exists) *exists = false;
     return isRawPhoto(path) ? Params::defaults() : Params::defaultsForImage();  // 輝度ノイズの ISO 初期値は開いたときに
+}
+
+Params initialParams(const QString& path, const LoadedRaw& src) {
+    if (!isRawPhoto(path)) return Params::defaultsForImage();
+    Params p = Params::defaults();
+    p.nrLuma = defaultLumaNr(src.meta.iso);
+    if (src.cameraRef.width > 0 && QSettings().value("develop/camera_profile", true).toBool())
+        matchCamera(src.linear, src.asShotGains, src.cameraRef, p);
+    return p;
 }
 
 bool writeParams(const QString& path, const Params& p) {
