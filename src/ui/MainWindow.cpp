@@ -1126,9 +1126,18 @@ void MainWindow::flushSave() {
 
 void MainWindow::autoAdjust(float strength, bool wbOnly) {
     if (!s_ || !s_->preview) return;
-    const Params p = autoParams(*s_->preview, s_->src->asShotGains, strength, s_->params, wbOnly);
-    applyParams(p, true, wbOnly ? QStringLiteral("WB：自動") : QStringLiteral("自動調整（%1%）").arg(strength), true);
-    if (!wbOnly) statusBar()->showMessage(QStringLiteral("自動調整しました。各スライダーで調整を続けられます"), 4000);
+    AutoInfo info;
+    const Params p = autoParams(*s_->preview, s_->src->asShotGains, strength, s_->params, wbOnly,
+                                s_->isRaw ? &s_->src->meta : nullptr, &info);
+    const QString scene = QString::fromStdString(info.scene);
+    applyParams(p, true,
+                wbOnly ? QStringLiteral("WB：自動")
+                       : QStringLiteral("自動調整（%1%）").arg(strength) + (scene.isEmpty() ? QString() : "：" + scene),
+                true);
+    if (!wbOnly)
+        statusBar()->showMessage((scene.isEmpty() ? QString() : QStringLiteral("シーン：") + scene + QStringLiteral("。")) +
+                                     QStringLiteral("自動調整しました。各スライダーで調整を続けられます"),
+                                 5000);
 }
 
 void MainWindow::wbPick(int x, int y) {

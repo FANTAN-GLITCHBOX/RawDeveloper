@@ -71,7 +71,7 @@ def tone_lut(p: dict) -> np.ndarray:
     knee = 0.80
     y = np.where(x < knee, x, knee + (1 - knee) * (1 - np.exp(-(x - knee) / (1 - knee))))
     # 2) RAW の素の状態は眠いので、カメラ JPEG 寄りの軽い S 字を基本に入れる
-    y = y + 0.06 * np.sin(2 * np.pi * np.clip(y, 0, 1)) / (2 * np.pi) * 2
+    y = y - 0.06 * np.sin(2 * np.pi * np.clip(y, 0, 1)) / (2 * np.pi) * 2
     # 3) 白レベル・黒レベル・ハイライト・シャドウ（帯域ごとの持ち上げ/押し下げ）
     y = y + p["blacks"] / 100.0 * 0.08 * _bump(y, 0.04, 0.10)
     y = y + p["shadows"] / 100.0 * 0.13 * _bump(y, 0.25, 0.17)
@@ -81,7 +81,7 @@ def tone_lut(p: dict) -> np.ndarray:
     c = p["contrast"] / 100.0
     if c:
         yc = np.clip(y, 0, 1)
-        y = y + c * 0.45 * np.sin(2 * np.pi * yc) / (2 * np.pi) * 2 * np.where((y >= 0) & (y <= 1), 1, 0)
+        y = y - c * 0.45 * np.sin(2 * np.pi * yc) / (2 * np.pi) * 2 * np.where((y >= 0) & (y <= 1), 1, 0)
     y = np.maximum.accumulate(np.clip(y, 0.0, 1.0))
     # 5) ユーザーのトーンカーブ
     curves = p["curve"]

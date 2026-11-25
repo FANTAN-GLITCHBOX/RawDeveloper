@@ -9,6 +9,8 @@ struct Metadata {
     std::string make, model, lensMake, lensModel;
     float iso = 0, shutter = 0, aperture = 0, focal = 0;
     long long timestamp = 0;  // 撮影日時（UNIX 時刻）
+    float exposureBias = 0;   // カメラの露出補正（EV）。hasBias=false なら不明
+    bool hasBias = false;
     int fullWidth = 0, fullHeight = 0;
 };
 

@@ -3,6 +3,8 @@
 #include <libraw/libraw.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <memory>
 
 namespace rd {
@@ -72,6 +74,29 @@ std::array<float, 3> asShotFrom(const ImageF& day, const ImageF& cam) {
 }  // namespace
 
 namespace {
+// EXIF の露出補正（0x9204, SRATIONAL）を拾う
+struct ExifGrab {
+    float bias = 0;
+    bool has = false;
+};
+void exifCallback(void* ctx, int tag, int type, int len, unsigned int ord, void* ifp, INT64 /*base*/) {
+    auto* g = static_cast<ExifGrab*>(ctx);
+    if ((tag & 0xffff) != 0x9204 || g->has || len < 1 || (type != 10 && type != 5)) return;
+    auto* s = static_cast<LibRaw_abstract_datastream*>(ifp);
+    unsigned char b[8];
+    if (s->read(b, 1, 8) != 8) return;
+    auto u32 = [&](const unsigned char* p) {
+        return ord == 0x4949 ? (uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24)
+                             : (uint32_t(p[3]) | uint32_t(p[2]) << 8 | uint32_t(p[1]) << 16 | uint32_t(p[0]) << 24);
+    };
+    const uint32_t nu = u32(b), de = u32(b + 4);
+    if (de == 0) return;
+    const double v = type == 10 ? double(int32_t(nu)) / double(int32_t(de)) : double(nu) / double(de);
+    if (std::abs(v) > 10) return;
+    g->bias = float(v);
+    g->has = true;
+}
+
 void fillMeta(const LibRaw& raw, Metadata& m) {
     const auto& id = raw.imgdata;
     m.make = id.idata.make;
@@ -91,13 +116,19 @@ void fillMeta(const LibRaw& raw, Metadata& m) {
 Metadata readRawMetadata(const std::vector<unsigned char>& bytes) {
     Metadata m;
     auto raw = std::make_unique<LibRaw>();
+    ExifGrab g;
+    raw->set_exifparser_handler(exifCallback, &g);
     if (raw->open_buffer(const_cast<unsigned char*>(bytes.data()), bytes.size()) == LIBRAW_SUCCESS) fillMeta(*raw, m);
+    m.exposureBias = g.bias;
+    m.hasBias = g.has;
     return m;
 }
 
 LoadedRaw loadRaw(const std::vector<unsigned char>& bytes, bool half) {
     LoadedRaw res;
     auto raw = std::make_unique<LibRaw>();
+    ExifGrab g;
+    raw->set_exifparser_handler(exifCallback, &g);
     int rc = raw->open_buffer(const_cast<unsigned char*>(bytes.data()), bytes.size());
     if (rc != LIBRAW_SUCCESS) {
         res.error = libraw_strerror(rc);
@@ -108,6 +139,8 @@ LoadedRaw loadRaw(const std::vector<unsigned char>& bytes, bool half) {
         return res;
     }
     fillMeta(*raw, res.meta);
+    res.meta.exposureBias = g.bias;
+    res.meta.hasBias = g.has;
 
     // 撮影時 WB の推定：半分サイズでデイライト / カメラ WB を現像して比べる
     ImageF dayHalf, camHalf;

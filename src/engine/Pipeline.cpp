@@ -79,13 +79,14 @@ ToneLut toneLut(const Params& pIn) {
         const float x = kLutMax * i / (kLutN - 1);
         constexpr float knee = 0.80f;
         float v = x < knee ? x : knee + (1 - knee) * (1 - std::exp(-(x - knee) / (1 - knee)));
-        v = v + 0.06f * std::sin(2 * kPi * std::clamp(v, 0.0f, 1.0f)) / (2 * kPi) * 2;
+        // 軽い S 字（中間 0.5 を軸に暗部を下げ明部を上げる）
+        v = v - 0.06f * std::sin(2 * kPi * std::clamp(v, 0.0f, 1.0f)) / (2 * kPi) * 2;
         v = v + blacks / 100.0f * 0.08f * bump(v, 0.04f, 0.10f);
         v = v + shadows / 100.0f * 0.13f * bump(v, 0.25f, 0.17f);
         v = v + highlights / 100.0f * 0.13f * bump(v, 0.74f, 0.17f);
         v = v + whites / 100.0f * 0.08f * bump(v, 0.96f, 0.10f);
         const float c = contrast / 100.0f;
-        if (c != 0 && v >= 0 && v <= 1) v = v + c * 0.45f * std::sin(2 * kPi * v) / (2 * kPi) * 2;
+        if (c != 0 && v >= 0 && v <= 1) v = v - c * 0.45f * std::sin(2 * kPi * v) / (2 * kPi) * 2;
         y[i] = std::clamp(v, 0.0f, 1.0f);
     }
     for (int i = 1; i < kLutN; ++i) y[i] = std::max(y[i], y[i - 1]);

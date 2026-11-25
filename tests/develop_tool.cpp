@@ -1,4 +1,4 @@
-// rd_develop in.f32 params.json out.f32 [asShotR asShotG asShotB] [--auto out.json]
+// rd_develop in.f32 params.json out.f32 [asShotR asShotG asShotB] [--auto out.json] [--meta iso shutter aperture bias] [--apply]
 // .f32 = int32 幅, int32 高さ, float RGB...
 #include <QFile>
 #include <QJsonDocument>
@@ -33,9 +33,25 @@ int main(int argc, char** argv) {
     rd::Params p = rd::Params::fromJson(QJsonDocument::fromJson(pf.readAll()).object());
     std::array<float, 3> asShot{1, 1, 1};
     if (argc >= 7) asShot = {std::strtof(argv[4], nullptr), std::strtof(argv[5], nullptr), std::strtof(argv[6], nullptr)};
+    rd::Metadata meta;
+    bool haveMeta = false, apply = false;
+    for (int i = 4; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--apply") == 0) apply = true;
+        if (std::strcmp(argv[i], "--meta") == 0 && i + 4 < argc) {
+            meta.iso = std::strtof(argv[i + 1], nullptr);
+            meta.shutter = std::strtof(argv[i + 2], nullptr);
+            meta.aperture = std::strtof(argv[i + 3], nullptr);
+            meta.exposureBias = std::strtof(argv[i + 4], nullptr);
+            meta.hasBias = true;
+            haveMeta = true;
+        }
+    }
     for (int i = 4; i + 1 < argc; ++i)
         if (std::strcmp(argv[i], "--auto") == 0) {
-            rd::Params a = rd::autoParams(lin, asShot, 100, p);
+            rd::AutoInfo info;
+            rd::Params a = rd::autoParams(lin, asShot, 100, p, false, haveMeta ? &meta : nullptr, &info);
+            std::printf("scene: %s\n", info.scene.c_str());
+            if (apply) p = a;
             QFile af(argv[i + 1]);
             af.open(QIODevice::WriteOnly);
             af.write(QJsonDocument(a.toJson()).toJson());
