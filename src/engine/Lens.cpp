@@ -93,6 +93,17 @@ std::string LensDb::displayName(const std::string& key) const {
     return bar == std::string::npos ? key : key.substr(0, bar) + "  " + key.substr(bar + 1);
 }
 
+std::string LensDb::mountOf(const std::string& key) const {
+    std::lock_guard<std::mutex> lock(d_->mu);
+    auto it = d_->byKey.find(key);
+    if (it == d_->byKey.end() || !it->second->Mounts || !it->second->Mounts[0]) return {};
+    const char* const* m = it->second->Mounts;
+    // Lensfun ではレンズ一体型カメラのマウント名は小文字で始まる（例：canonG12）
+    if (m[0][0] >= 'a' && m[0][0] <= 'z') return "fixed";
+    if (m[1]) return "*";
+    return m[0];
+}
+
 LensInfo LensDb::identify(const Metadata& meta) const {
     std::lock_guard<std::mutex> lock(d_->mu);
     LensInfo info;

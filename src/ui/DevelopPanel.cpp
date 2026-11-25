@@ -3,6 +3,11 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCompleter>
+#include <QMap>
+#include <QTimer>
+#include <QLineEdit>
+#include <QGridLayout>
+#include <QStandardItemModel>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -227,29 +232,82 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
         lensStatus_ = new QLabel;
         lensStatus_->setWordWrap(true);
         lensStatus_->setStyleSheet("color:#8c8c8c; background: transparent;");
-        auto* hl = new QHBoxLayout;
-        hl->addWidget(new QLabel(QStringLiteral("レンズ")));
+        // メーカー → レンズの 2 段で選ぶ。名前の一部で全メーカーから検索もできる
+        auto* grid = new QGridLayout;
+        grid->setContentsMargins(0, 0, 0, 0);
+        lensMaker_ = new QComboBox;
+        lensMaker_->addItem(QStringLiteral("自動（EXIF から検出）"), QString());
+        {
+            QMap<QString, int> counts;
+            QMap<QString, QString> canon;  // 大文字小文字の違いをまとめる
+            for (const auto& k : LensDb::get().allKeys()) {
+                const QString key = QString::fromStdString(k);
+                const QString mk = key.section('|', 0, 0).trimmed();
+                const QString low = mk.toLower();
+                if (!canon.contains(low)) canon[low] = mk;
+                counts[canon[low]]++;
+            }
+            QStringList makers = counts.keys();
+            std::sort(makers.begin(), makers.end(), [](const QString& a, const QString& b) { return a.compare(b, Qt::CaseInsensitive) < 0; });
+            for (const QString& m : makers) lensMaker_->addItem(QStringLiteral("%1（%2）").arg(m).arg(counts[m]), m);
+        }
         lensCombo_ = new QComboBox;
-        lensCombo_->setEditable(true);
-        lensCombo_->setInsertPolicy(QComboBox::NoInsert);
         lensCombo_->setMinimumContentsLength(6);
         lensCombo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-        lensCombo_->addItem(QStringLiteral("自動（EXIF から検出）"), QString());
+        lensCombo_->setMaxVisibleItems(25);
+        lensMaker_->setMaxVisibleItems(25);
+        lensSearch_ = new QLineEdit;
+        lensSearch_->setPlaceholderText(QStringLiteral("名前で検索（例：24-70）"));
+        lensSearch_->setClearButtonEnabled(true);
         QStringList names;
         const auto& db = LensDb::get();
-        for (const auto& k : db.allKeys()) {
-            const QString name = QString::fromStdString(db.displayName(k));
-            lensCombo_->addItem(name, QString::fromStdString(k));
-            names << name;
-        }
-        auto* comp = new QCompleter(names, lensCombo_);
+        for (const auto& k : db.allKeys()) names << QString::fromStdString(db.displayName(k));
+        auto* comp = new QCompleter(names, lensSearch_);
         comp->setCaseSensitivity(Qt::CaseInsensitive);
         comp->setFilterMode(Qt::MatchContains);
-        lensCombo_->setCompleter(comp);
-        hl->addWidget(lensCombo_, 1);
+        comp->setMaxVisibleItems(20);
+        lensSearch_->setCompleter(comp);
+        grid->addWidget(new QLabel(QStringLiteral("メーカー")), 0, 0);
+        grid->addWidget(lensMaker_, 0, 1);
+        grid->addWidget(new QLabel(QStringLiteral("レンズ")), 1, 0);
+        grid->addWidget(lensCombo_, 1, 1);
+        grid->addWidget(new QLabel(QStringLiteral("検索")), 2, 0);
+        grid->addWidget(lensSearch_, 2, 1);
+        grid->setColumnStretch(1, 1);
+        auto* hl = grid;
+        connect(comp, qOverload<const QString&>(&QCompleter::activated), this, [this](const QString& text) {
+            const auto& db = LensDb::get();
+            for (const auto& k : db.allKeys())
+                if (QString::fromStdString(db.displayName(k)) == text) {
+                    p_.lensKey = QString::fromStdString(k);
+                    p_.enabled.lens = true;
+                    updating_ = true;
+                    fillLensModels(p_.lensKey.section('|', 0, 0).trimmed(), p_.lensKey);
+                    updating_ = false;
+                    QTimer::singleShot(0, lensSearch_, &QLineEdit::clear);
+                    syncSections();
+                    emitChange(true, QStringLiteral("レンズを選択"));
+                    return;
+                }
+        });
+        connect(lensMaker_, &QComboBox::activated, this, [this](int i) {
+            if (updating_) return;
+            const QString mk = lensMaker_->itemData(i).toString();
+            if (mk.isEmpty()) {
+                fillLensModels({}, {});
+                p_.lensKey.clear();
+                p_.enabled.lens = true;
+                syncSections();
+                emitChange(true, QStringLiteral("レンズ：自動"));
+            } else {
+                fillLensModels(mk, {});
+                lensCombo_->showPopup();  // 続けてレンズを選べるように
+            }
+        });
         pv->addWidget(lensProfile_);
         pv->addWidget(lensStatus_);
         pv->addLayout(hl);
+        fillLensModels({}, {});
         for (auto [key, label] : {std::pair{"lens.distortion", "歪曲"}, std::pair{"lens.vignetting", "周辺光量"}}) {
             auto* r = new ParamRow(key, QString::fromUtf8(label), 0, 200, 100, 0, 1, "%");
             connect(r, &ParamRow::changed, this, &DevelopPanel::rowChanged);
@@ -287,6 +345,7 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
         onCheck(lensTrim_, &Params::lensAutotrim, QStringLiteral("自動トリミング"));
         connect(lensCombo_, &QComboBox::activated, this, [this](int i) {
             if (updating_) return;
+            if (lensCombo_->itemData(i).toString().isEmpty()) return;  // 「選んでください」
             p_.lensKey = lensCombo_->itemData(i).toString();
             p_.enabled.lens = true;
             syncSections();
@@ -388,10 +447,7 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
     lensProfile_->setChecked(p_.lensProfile);
     lensCa_->setChecked(p_.lensCa);
     lensTrim_->setChecked(p_.lensAutotrim);
-    {
-        const int i = lensCombo_->findData(p_.lensKey);
-        lensCombo_->setCurrentIndex(i < 0 ? 0 : i);
-    }
+    fillLensModels(p_.lensKey.section('|', 0, 0).trimmed(), p_.lensKey);
     syncSections();
     updating_ = false;
 }
@@ -399,6 +455,82 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
 void DevelopPanel::setHistogram(const std::vector<float>& h) { curve_->canvas()->setHistogram(h); }
 
 double DevelopPanel::aspectValue() const { return aspect_->currentData().toDouble(); }
+
+void DevelopPanel::fillLensModels(const QString& maker, const QString& selectKey) {
+    lensCombo_->clear();
+    if (maker.isEmpty()) {
+        lensMaker_->setCurrentIndex(0);
+        lensCombo_->addItem(QStringLiteral("（自動で検出したレンズ）"), QString());
+        lensCombo_->setEnabled(false);
+        return;
+    }
+    for (int i = 1; i < lensMaker_->count(); ++i)
+        if (lensMaker_->itemData(i).toString().compare(maker, Qt::CaseInsensitive) == 0) lensMaker_->setCurrentIndex(i);
+    lensCombo_->setEnabled(true);
+    lensCombo_->addItem(QStringLiteral("レンズを選んでください"), QString());
+    // マウントごとに見出しを付ける（複数マウント対応・レンズ一体型カメラは最後に）
+    struct It {
+        QString group, name, key;
+    };
+    QList<It> items;
+    const auto& db = LensDb::get();
+    for (const auto& k : db.allKeys()) {
+        const QString key = QString::fromStdString(k);
+        if (key.section('|', 0, 0).trimmed().compare(maker, Qt::CaseInsensitive) != 0) continue;
+        const std::string m = db.mountOf(k);
+        const QString g = m == "fixed" ? QStringLiteral("~2") : m == "*" ? QStringLiteral("~1") : QString::fromStdString(m);
+        QString name = key.section('|', 1).trimmed();
+        if (name.startsWith(maker + ' ', Qt::CaseInsensitive)) name = name.mid(maker.size() + 1);  // 「Canon」の重複を省く
+        items.append({g, name, key});
+    }
+    // 数字は数として比べる（14mm → 100mm の順に）
+    auto natural = [](const QString& a, const QString& b) {
+        int i = 0, j = 0;
+        while (i < a.size() && j < b.size()) {
+            if (a[i].isDigit() && b[j].isDigit()) {
+                int i2 = i, j2 = j;
+                while (i2 < a.size() && (a[i2].isDigit() || a[i2] == '.')) ++i2;
+                while (j2 < b.size() && (b[j2].isDigit() || b[j2] == '.')) ++j2;
+                const double x = a.mid(i, i2 - i).toDouble(), y = b.mid(j, j2 - j).toDouble();
+                if (x != y) return x < y ? -1 : 1;
+                i = i2;
+                j = j2;
+            } else {
+                const QChar ca = a[i].toLower(), cb = b[j].toLower();
+                if (ca != cb) return ca < cb ? -1 : 1;
+                ++i;
+                ++j;
+            }
+        }
+        return int((a.size() - i) - (b.size() - j));
+    };
+    std::sort(items.begin(), items.end(), [&](const It& a, const It& b) {
+        if (a.group != b.group) return natural(a.group, b.group) < 0;
+        return natural(a.name, b.name) < 0;
+    });
+    auto* model = qobject_cast<QStandardItemModel*>(lensCombo_->model());
+    QString cur = "\x01";
+    for (const auto& it : items) {
+        if (it.group != cur) {
+            cur = it.group;
+            const QString title = cur == "~1" ? QStringLiteral("複数のマウントに対応")
+                                : cur == "~2" ? QStringLiteral("レンズ一体型カメラ")
+                                              : cur + QStringLiteral(" マウント");
+            lensCombo_->addItem(QStringLiteral("── ") + title + QStringLiteral(" ──"), QString());
+            if (model) {
+                QStandardItem* h = model->item(lensCombo_->count() - 1);
+                h->setFlags(Qt::NoItemFlags);  // 選べない見出し
+                QFont f = h->font();
+                f.setBold(true);
+                h->setFont(f);
+                h->setForeground(QColor(0xd2, 0x8b, 0x2c));
+            }
+        }
+        lensCombo_->addItem(QStringLiteral("　") + it.name, it.key);
+    }
+    const int i = lensCombo_->findData(selectKey);
+    lensCombo_->setCurrentIndex(i < 0 ? 0 : i);
+}
 
 void DevelopPanel::setLensStatus(const QString& text) {
     if (LensDb::get().ok()) lensStatus_->setText(text);

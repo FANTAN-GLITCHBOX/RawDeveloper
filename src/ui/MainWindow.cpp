@@ -41,6 +41,8 @@
 #include <QItemSelectionModel>
 #include <QProgressDialog>
 #include <QSaveFile>
+#include <QComboBox>
+#include <QScrollArea>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <atomic>
@@ -1905,6 +1907,34 @@ void MainWindow::runScriptedTest(const QString& prefix) {
         }
         std::fflush(stdout);
     };
+    if (qEnvironmentVariableIsSet("RD_TEST_LENS")) {
+        QTimer::singleShot(5000, this, [this, prefix] {
+            for (auto* cb : panel_->findChildren<QComboBox*>())
+                if (cb->count() > 1 && cb->itemText(0).startsWith(QStringLiteral("自動（EXIF"))) {
+                    const int i = cb->findData("Canon");
+                    cb->setCurrentIndex(i);
+                    emit cb->activated(i);
+                    for (auto* sa = qobject_cast<QWidget*>(cb->parent()); sa; sa = sa->parentWidget())
+                        if (auto* a = qobject_cast<QScrollArea*>(sa)) a->ensureWidgetVisible(cb);
+                    std::printf("makers %d\n", cb->count());
+                }
+            for (auto* cb : panel_->findChildren<QComboBox*>())
+                if (cb->count() > 1 && cb->itemText(0) == QStringLiteral("レンズを選んでください")) {
+                    cb->hidePopup();
+                    std::printf("canon lenses %d: %s / %s / %s\n", cb->count() - 1, cb->itemText(1).toUtf8().constData(),
+                                cb->itemText(2).toUtf8().constData(), cb->itemText(cb->count() - 1).toUtf8().constData());
+                    auto* v = cb->view();
+                    v->resize(420, 640);
+                    v->grab().save(prefix + "_lenslist.png");
+                }
+            std::fflush(stdout);
+            QTimer::singleShot(1500, this, [this, prefix] {
+                grab().save(prefix + "_lens.png");
+                QApplication::quit();
+            });
+        });
+        return;
+    }
     if (qEnvironmentVariableIsSet("RD_TEST_BATCH")) {
         auto bsteps = std::make_shared<std::vector<Step>>(std::vector<Step>{
             {5000, [=, this] {

@@ -10,6 +10,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QLineEdit;
 class QLabel;
 class QPushButton;
 class QToolButton;
@@ -72,7 +73,10 @@ private:
     QCheckBox* lensProfile_ = nullptr;
     QCheckBox* lensCa_ = nullptr;
     QCheckBox* lensTrim_ = nullptr;
-    QComboBox* lensCombo_ = nullptr;
+    QComboBox* lensCombo_ = nullptr;   // レンズ（選んだメーカーの中から）
+    QComboBox* lensMaker_ = nullptr;   // メーカー（先頭は「自動」）
+    QLineEdit* lensSearch_ = nullptr;  // 全メーカーから名前で検索
+    void fillLensModels(const QString& maker, const QString& selectKey);
     QLabel* lensStatus_ = nullptr;
 };
 

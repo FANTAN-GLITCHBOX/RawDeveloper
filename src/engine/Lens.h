@@ -32,6 +32,8 @@ public:
     LensInfo identify(const Metadata& meta) const;
     std::vector<std::string> allKeys() const;  // 一覧用（メーカー・モデル順）
     std::string displayName(const std::string& key) const;
+    // レンズのマウント（一覧の見出し用）。複数マウント対応なら "*"、レンズ一体型カメラなら "fixed"
+    std::string mountOf(const std::string& key) const;
 
 private:
     LensDb();
