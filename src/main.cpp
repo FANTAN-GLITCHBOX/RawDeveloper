@@ -32,7 +32,9 @@ int main(int argc, char* argv[]) {
     }
     rd::MainWindow w;
     w.show();
-    const QString arg = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
+    // Windows では日本語などのパスを正しく受け取るため、Qt の arguments()（UTF-16）を使う
+    const QStringList args = QCoreApplication::arguments();
+    const QString arg = args.size() > 1 ? args[1] : QString();
     if (!arg.isEmpty() && QFileInfo(arg).isDir())
         w.openFolder(arg);
     else if (!arg.isEmpty())

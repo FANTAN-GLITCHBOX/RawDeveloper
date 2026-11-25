@@ -705,6 +705,7 @@ GlBackend::~GlBackend() {
 
 bool GlBackend::runMain(const MainStage& st, ImageF& out) {
     if (!d_ || d_->broken) return false;
+    if (!st.lin || st.lin->width < 1 || st.lin->height < 1) return false;  // 空の画像は CPU で（GPU を止めない）
     std::lock_guard<std::mutex> lk(d_->mu);
     bool ok = false;
     d_->runOnGl([&] { ok = d_->run(st, out); });

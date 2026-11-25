@@ -1,5 +1,7 @@
 // rd_gputest raw：同じ設定で CPU と GPU の現像結果を比べる（違いの最大・平均と速さ）
+#include <QCoreApplication>
 #include <QFile>
+#include <QStringList>
 #include <QGuiApplication>
 #include <chrono>
 #include <cstdio>
@@ -27,12 +29,25 @@ int main(int argc, char** argv) {
         return 2;
     }
     std::printf("renderer: %s\n", gpu->renderer().toUtf8().constData());
-    QFile f(argv[1]);
-    f.open(QIODevice::ReadOnly);
+    std::fflush(stdout);
+    const QStringList args = QCoreApplication::arguments();  // 日本語のパスも正しく
+    if (args.size() < 2) {
+        std::printf("使い方: rd_gputest.exe RAWファイル [長辺]\n");
+        return 2;
+    }
+    QFile f(args[1]);
+    if (!f.open(QIODevice::ReadOnly)) {
+        std::printf("ファイルを開けません: %s\n", args[1].toUtf8().constData());
+        return 2;
+    }
     const QByteArray b = f.readAll();
     std::vector<unsigned char> bytes(b.begin(), b.end());
     auto raw = loadRaw(bytes, true);
-    const ImageF prev = downscale(raw.linear, argc > 2 ? atoi(argv[2]) : 1200);
+    if (!raw.error.empty()) {
+        std::printf("RAW を読めません: %s\n", raw.error.c_str());
+        return 2;
+    }
+    const ImageF prev = downscale(raw.linear, args.size() > 2 ? args[2].toInt() : 1200);
     DevelopOptions o;
     o.scale = float(prev.width) / raw.meta.fullWidth;
     const ImageF ref = cameraReference(bytes, raw.meta.fullWidth, raw.meta.fullHeight);
@@ -73,14 +88,17 @@ int main(int argc, char** argv) {
     int bad = 0;
     for (auto& c : cases) {
         setGpuBackend(nullptr);
+        develop(prev, c.p, raw.asShotGains, o);  // 準備（レンズ・ノイズの使い回しをそろえる）
         auto t0 = std::chrono::steady_clock::now();
-        const ImageF cpu = develop(prev, c.p, raw.asShotGains, o);
-        const double tc = ms(t0);
+        ImageF cpu;
+        for (int k = 0; k < 3; ++k) cpu = develop(prev, c.p, raw.asShotGains, o);
+        const double tc = ms(t0) / 3;
         setGpuBackend(gpu);
         develop(prev, c.p, raw.asShotGains, o);  // 準備
         t0 = std::chrono::steady_clock::now();
-        const ImageF gg = develop(prev, c.p, raw.asShotGains, o);
-        const double tg = ms(t0);
+        ImageF gg;
+        for (int k = 0; k < 3; ++k) gg = develop(prev, c.p, raw.asShotGains, o);
+        const double tg = ms(t0) / 3;
         double mx = 0, sum = 0;
         size_t over = 0;
         for (size_t i = 0; i < cpu.data.size(); ++i) {
