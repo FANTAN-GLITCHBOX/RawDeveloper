@@ -45,6 +45,7 @@
 #include <QStackedWidget>
 #include <atomic>
 
+#include "core/CameraRef.h"
 #include "core/Catalog.h"
 #include "core/Export.h"
 #include "core/Xmp.h"
@@ -111,7 +112,12 @@ std::shared_ptr<LoadedRaw> loadImageFile(const QString& path, bool half) {
 }
 
 std::shared_ptr<LoadedRaw> loadAny(const QString& path, bool half) {
-    if (isRawPath(path)) return std::make_shared<LoadedRaw>(loadRaw(readAll(path), half));
+    if (isRawPath(path)) {
+        const auto bytes = readAll(path);
+        auto r = std::make_shared<LoadedRaw>(loadRaw(bytes, half));
+        if (r->error.empty()) r->cameraRef = cameraReference(bytes, r->meta.fullWidth, r->meta.fullHeight);
+        return r;
+    }
     return loadImageFile(path, half);
 }
 
@@ -1128,7 +1134,8 @@ void MainWindow::autoAdjust(float strength, bool wbOnly) {
     if (!s_ || !s_->preview) return;
     AutoInfo info;
     const Params p = autoParams(*s_->preview, s_->src->asShotGains, strength, s_->params, wbOnly,
-                                s_->isRaw ? &s_->src->meta : nullptr, &info);
+                                s_->isRaw ? &s_->src->meta : nullptr, &info,
+                                s_->src->cameraRef.width > 0 ? &s_->src->cameraRef : nullptr);
     const QString scene = QString::fromStdString(info.scene);
     applyParams(p, true,
                 wbOnly ? QStringLiteral("WB：自動")

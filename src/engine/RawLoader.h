@@ -18,6 +18,7 @@ struct LoadedRaw {
     ImageF linear;                       // デイライト WB で現像したリニア sRGB
     std::array<float, 3> asShotGains{1, 1, 1};  // デイライト基準からの撮影時 WB（G=1）
     Metadata meta;
+    ImageF cameraRef;                    // カメラの JPEG（表示用 sRGB・小さい）。自動調整の手本。無ければ空
     std::string error;                   // 空なら成功
 };
 

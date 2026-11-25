@@ -131,9 +131,11 @@ struct ToneEval {
     double midTarget = 0.42;     // 重要部分の明るさの中央値（表示値）
     double hiAllow = 0.003;      // 白飛びしてよい割合
     double evPrior = 0;          // 露出の目安（ここから大きく離れると減点）
+    double sdMin = 0;            // メリハリの下限（0 ならシーンから決める）
+    double camP10 = -1, camP90 = -1;  // カメラの JPEG の暗部・明部（重要部分）。-1 なら無し
 
     struct Stats {
-        double med = 0, p005 = 0, p10 = 0, p995 = 0, sd = 0, clipHi = 0, clipLo = 0, crushed = 0;
+        double med = 0, p005 = 0, p10 = 0, p90 = 0, p995 = 0, sd = 0, clipHi = 0, clipLo = 0, crushed = 0;
     };
 
     Stats measure(const Params& p) const {
@@ -182,6 +184,7 @@ struct ToneEval {
         Stats st;
         st.med = pct(hw, totalW, 0.5);
         st.p10 = pct(hw, totalW, 0.10);
+        st.p90 = pct(hw, totalW, 0.90);
         st.p005 = pct(hu, nu, 0.005);
         st.p995 = pct(hu, nu, 0.995);
         const double mean = s / nu;
@@ -200,18 +203,25 @@ struct ToneEval {
         auto sq = [](double v) { return v * v; };
         double c = 0;
         c += sq((st.med - midTarget) / 0.04);                                   // 主役の明るさ
+        if (camP10 >= 0) {                                                      // カメラの階調の付け方に寄せる
+            c += sq((st.p10 - camP10) / 0.04) * 0.6;
+            c += sq((st.p90 - camP90) / 0.04) * 0.4;
+        }
         c += sq(std::max(0.0, st.clipHi - hiAllow) / 0.01) * 1.5;               // 白飛び
         c += sq(std::max(0.0, st.clipLo - 0.004) / 0.01);                       // 黒つぶれ
         if (!scene.highKey) c += sq(std::max(0.0, 0.93 - st.p995) / 0.05) * 0.6;  // 白がくすむ
         if (!scene.night) c += sq(std::max(0.0, st.p005 - 0.07) / 0.05) * 0.3;    // 黒が浮く
         c += sq(std::max(0.0, st.crushed - (scene.night ? 0.25 : 0.06)) / 0.05) * 0.6;  // 暗部がつぶれる
         // メリハリ：眠い（平坦な）ときだけ上げる。もともとメリハリがある写真は下げない
-        const double sdMin = scene.highKey ? 0.12 : 0.17;
-        c += sq(std::max(0.0, sdMin - st.sd) / 0.05) * 0.6;
+        const double sdm = sdMin > 0 ? sdMin : scene.highKey ? 0.12 : 0.17;
+        c += sq(std::max(0.0, sdm - st.sd) / 0.05) * 0.6;
         // 動かしすぎない（同じ見た目なら素直な値を選ぶ）
         c += 0.08 * (sq(p.contrast / 22) + sq(p.highlights / 60) + sq(p.shadows / 60) + sq(p.whites / 30) +
                      sq(p.blacks / 30));
         c += 0.15 * sq((p.exposure - evPrior) / 1.5);
+        // 極端な値（シャドウを大きく上げて黒を大きく下げる HDR 風など）は避ける
+        c += sq(std::max(0.0, std::abs(double(p.shadows)) - 50.0) / 25.0) + sq(std::max(0.0, std::abs(double(p.highlights)) - 60.0) / 25.0) +
+             sq(std::max(0.0, std::abs(double(p.blacks)) - 30.0) / 15.0);
         if (scene.night) c += sq(std::max(0.0, p.shadows - 35.0) / 20.0) + sq(std::max(0.0, std::abs(p.exposure - evPrior) - 0.8) / 0.3);
         // シャドウを大きく持ち上げてコントラストを下げると眠い画になる
         if (p.shadows > 30 && p.contrast < 0) c += sq(p.shadows * -p.contrast / 1500.0);
@@ -256,7 +266,7 @@ Params optimizeTone(const ToneEval& ev, Params p) {
 }  // namespace
 
 Params autoParams(const ImageF& lin, const std::array<float, 3>& asShot, float strength, const Params& base,
-                  bool wbOnly, const Metadata* meta, AutoInfo* info) {
+                  bool wbOnly, const Metadata* meta, AutoInfo* info, const ImageF* cameraRef) {
     Params p = base;
     p.enabled.basic = true;
     const ImageF small = downscale(lin, 512);
@@ -274,27 +284,67 @@ Params autoParams(const ImageF& lin, const std::array<float, 3>& asShot, float s
 
     // ---- 1) WB：雰囲気を残しつつ、自然な光の色の範囲で
     const auto [t0, tint0] = fitTempTint(asShot);
-    const auto est = estimateWb(small, asShot);
+    auto est = estimateWb(small, asShot);
+    // カメラの JPEG があれば、その色に合う WB を求めて推定と混ぜる（カメラの色の判断はかなり確か）
+    bool camWb = false;
+    if (est && cameraRef && cameraRef->width > 16) {
+        const ImageF t = downscale(small, 160);
+        double sc[3] = {0, 0, 0}, so[3] = {0, 0, 0};
+        for (int y = 0; y < t.height; ++y)
+            for (int x = 0; x < t.width; ++x) {
+                const float* o = t.px(x, y);
+                const float* q = cameraRef->px(std::min(cameraRef->width - 1, x * cameraRef->width / t.width),
+                                               std::min(cameraRef->height - 1, y * cameraRef->height / t.height));
+                const float qm = std::max({q[0], q[1], q[2]}), qn = std::min({q[0], q[1], q[2]});
+                if (qm > 0.97f || qm < 0.12f) continue;  // 白飛び・暗すぎる所は使わない
+                const double wgt = 1.0 / (0.15 + (qm - qn));  // 色の薄い所を重視
+                for (int c = 0; c < 3; ++c) {
+                    sc[c] += std::pow(q[c], kGamma) * wgt;
+                    so[c] += double(o[c]) * asShot[c] * wgt;
+                }
+            }
+        if (so[0] > 0 && so[1] > 0 && so[2] > 0 && sc[1] > 0) {
+            double corr[3];
+            for (int c = 0; c < 3; ++c) corr[c] = (sc[c] / so[c]) / (sc[1] / so[1]);
+            const std::array<float, 3> g{float(corr[0] * asShot[0]), float(asShot[1]), float(corr[2] * asShot[2])};
+            const auto [ct, ctint] = fitTempTint(g);
+            if (std::getenv("RD_AUTO_DEBUG")) std::fprintf(stderr, "  camera match %.0fK %.1f\n", ct, ctint);
+            const double mc = 1e6 / ct, me = 1e6 / est->temp;
+            (void)me;
+            est->temp = ct;
+            est->tint = ctint;
+            est->confidence = std::max(est->confidence, 0.85);
+            camWb = true;
+        }
+    }
     std::array<float, 3> gains = asShot;
     if (!est || k <= 0) {
         p.wbMode = "as_shot";
         p.temp = static_cast<float>(t0);
         p.tint = static_cast<float>(tint0);
     } else {
+        if (std::getenv("RD_AUTO_DEBUG"))
+            std::fprintf(stderr, "  wb asShot %.0fK %.0f  est %.0fK %.1f conf %.2f\n", t0, tint0, est->temp, est->tint, est->confidence);
         const double m0 = 1e6 / t0;
         double m = 1e6 / est->temp;
         // 暖かい光（電球・夕日）は暖かさを少し残す。日中なのにとても暖かい＝夕景とみなして多めに残す
         sc.warmLight = est->temp < 4200;
         sc.sunset = sc.warmLight && !std::isnan(sc.ev100) && sc.ev100 >= 9.0;
         const double mNeutral = 1e6 / 5200.0;
-        if (sc.warmLight) m -= (m - mNeutral) * (sc.sunset ? 0.8 : 0.30);
+        const double mEst = m;
+        if (camWb) {
+            // カメラの色に合わせる（雰囲気の残し方もカメラの判断に任せる）
+        } else if (sc.warmLight) m -= (m - mNeutral) * (sc.sunset ? 0.8 : 0.30);
         else if (est->temp > 7500) m -= (m - mNeutral) * 0.15;  // 日陰の青さも少し残す
+        // 雰囲気を残すのは「推定」と「撮影時（カメラの判断）」の間まで。撮影時より強くはしない
+        m = std::clamp(m, std::min(m0, mEst), std::max(m0, mEst));
         double tint = est->tint;
         // 信頼度で撮影時の設定と混ぜる
-        const double w = k * (0.35 + 0.65 * est->confidence);
+        const double w = camWb ? k : k * (0.35 + 0.65 * est->confidence);
         m = m0 + std::clamp(m - m0, -kMaxMiredShift, kMaxMiredShift) * w;
         // 緑・マゼンタ方向は間違えると目立つので、自信があるときだけ大きく動かす
-        tint = tint0 + std::clamp(tint - tint0, -14.0, 14.0) * k * est->confidence;
+        tint = camWb ? tint0 + std::clamp(tint - tint0, -25.0, 25.0) * k
+                     : tint0 + std::clamp(tint - tint0, -14.0, 14.0) * k * est->confidence;
         if (std::abs(m - m0) < 4 && std::abs(tint - tint0) < 2) {
             p.wbMode = "as_shot";
             p.temp = static_cast<float>(t0);
@@ -360,7 +410,46 @@ Params autoParams(const ImageF& lin, const std::array<float, 3>& asShot, float s
     te.midTarget = sc.night ? 0.22 : sc.highKey ? 0.66 : sc.dim ? 0.40 : 0.43;
     if (sc.sunset) te.midTarget -= 0.04;  // 夕景は少し暗めの方が雰囲気が出る
     te.midTarget = std::clamp(te.midTarget + sc.bias * 0.06, 0.22, 0.72);  // 撮影者の露出補正の意図を半分くらい残す
-    te.hiAllow = sc.backlit ? 0.04 : sc.highKey ? 0.006 : 0.003;
+    // カメラの JPEG があれば手本にする（カメラは露出補正・シーンも考えて仕上げているので、明るさの基準として確か）
+    if (cameraRef && cameraRef->width > 16) {
+        std::vector<std::pair<float, float>> cv;
+        cv.reserve(n);
+        double cs = 0, cs2 = 0;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const int rx = std::min(cameraRef->width - 1, x * cameraRef->width / w);
+                const int ry = std::min(cameraRef->height - 1, y * cameraRef->height / h);
+                const float* q = cameraRef->px(rx, ry);
+                const float yv = q[0] * kLuma[0] + q[1] * kLuma[1] + q[2] * kLuma[2];
+                cv.push_back({yv, te.weight[size_t(y) * w + x]});
+                cs += yv;
+                cs2 += double(yv) * yv;
+            }
+        std::sort(cv.begin(), cv.end());
+        double acc = 0, camMed = cv.back().first;
+        for (auto& e : cv) {
+            acc += e.second;
+            if (acc >= te.totalW * 0.5) {
+                camMed = e.first;
+                break;
+            }
+        }
+        const double camSd = std::sqrt(std::max(0.0, cs2 / n - (cs / n) * (cs / n)));
+        auto wq = [&](double q) {
+            double a = 0;
+            for (auto& e : cv) {
+                a += e.second;
+                if (a >= te.totalW * q) return double(e.first);
+            }
+            return double(cv.back().first);
+        };
+        te.camP10 = wq(0.10);
+        te.camP90 = std::min(wq(0.90), 0.97);
+        te.midTarget = std::clamp(0.85 * camMed + 0.15 * te.midTarget, 0.2, 0.75);
+        te.sdMin = std::clamp(camSd * 0.95, 0.10, 0.26);
+        if (info) info->usedCamera = true;
+    }
+    te.hiAllow = sc.backlit ? 0.015 : sc.highKey ? 0.006 : 0.003;
     // 露出の目安：重み付き中央値を中間グレーへ
     {
         std::vector<std::pair<float, float>> lw(n);

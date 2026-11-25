@@ -62,7 +62,8 @@ add_library(rdcore STATIC
   src/core/Xmp.h src/core/Xmp.cpp
   src/core/Catalog.h src/core/Catalog.cpp
   src/core/Export.h src/core/Export.cpp
-)
+
+    src/core/CameraRef.h src/core/CameraRef.cpp)
 target_link_libraries(rdcore PUBLIC rdengine Qt6::Gui Qt6::Sql TIFF::TIFF ZLIB::ZLIB)
 
 # アプリ本体
@@ -91,6 +92,9 @@ target_link_libraries(rd_selftest PRIVATE rdengine)
 install(TARGETS rd_selftest RUNTIME DESTINATION .)
 
 # Python 版との一致確認用：リニア画像(.f32)＋パラメータ(JSON) → 現像結果(.f32)
+add_executable(rd_auto tests/auto_tool.cpp)
+target_link_libraries(rd_auto PRIVATE rdcore)
+
 add_executable(rd_develop tests/develop_tool.cpp)
 target_link_libraries(rd_develop PRIVATE rdengine)
 target_compile_definitions(rd_develop PRIVATE LENS_DIR="${CMAKE_SOURCE_DIR}/data/lensfun")
