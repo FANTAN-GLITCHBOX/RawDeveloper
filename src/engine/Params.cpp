@@ -74,7 +74,7 @@ QJsonObject Params::toJson() const {
     o["wheels"] = QJsonObject{{"lift", toArr(lift.data(), 3)}, {"gamma", toArr(gamma.data(), 3)},
                               {"gain", toArr(gain.data(), 3)}, {"offset", toArr(offset.data(), 3)}};
     o["skin"] = QJsonObject{{"hue", skinHue},          {"sat", skinSat},          {"lum", skinLum},
-                            {"uni_hue", skinUniHue},   {"uni_sat", skinUniSat},   {"uni_lum", skinUniLum},
+                            {"uni_hue", skinUniHue},   {"uni_sat", skinUniSat},   {"uni_lum", skinUniLum}, {"smooth", skinSmooth}, {"texture", skinTexture},
                             {"center_hue", skinCenterHue}, {"center_sat", skinCenterSat}, {"range", skinRange}};
     o["sharpen"] = QJsonObject{{"amount", sharpenAmount}, {"radius", sharpenRadius}, {"masking", sharpenMasking}};
     o["nr"] = QJsonObject{{"luma", nrLuma},           {"color", nrColor},
@@ -139,6 +139,8 @@ Params Params::fromJson(const QJsonObject& o) {
     p.skinUniHue = num(sk, "uni_hue", 0);
     p.skinUniSat = num(sk, "uni_sat", 0);
     p.skinUniLum = num(sk, "uni_lum", 0);
+    p.skinSmooth = num(sk, "smooth", 0);
+    p.skinTexture = num(sk, "texture", 50);
     p.skinCenterHue = num(sk, "center_hue", 22);
     p.skinCenterSat = num(sk, "center_sat", 0.40f);
     p.skinRange = num(sk, "range", 50);
@@ -196,6 +198,8 @@ void resetPanel(Params& p, Panel panel) {
         case Panel::Skin:
             p.skinHue = p.skinSat = p.skinLum = 0;
             p.skinUniHue = p.skinUniSat = p.skinUniLum = 0;
+            p.skinSmooth = 0;
+            p.skinTexture = d.skinTexture;
             p.skinCenterHue = d.skinCenterHue;
             p.skinCenterSat = d.skinCenterSat;
             p.skinRange = d.skinRange;

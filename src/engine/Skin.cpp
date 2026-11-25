@@ -22,6 +22,7 @@ float hueDiff(float a, float b) {
 bool skinActive(const Params& p) {
     if (!p.enabled.skin) return false;
     return p.skinHue != 0 || p.skinSat != 0 || p.skinLum != 0 || p.skinUniHue > 0 || p.skinUniSat > 0 || p.skinUniLum > 0 ||
+           p.skinSmooth > 0 ||
            p.skinMaskView;
 }
 
@@ -55,10 +56,10 @@ void skinAdjust(const Params& p, float m, float& h, float& s, float& v) {
     v = std::clamp(v, 0.0f, 1.0f);
 }
 
-int skinMargin(const Params& p) { return p.enabled.skin && p.skinUniLum > 0 ? 40 : 0; }
+int skinMargin(const Params& p) { return p.enabled.skin && (p.skinUniLum > 0 || p.skinSmooth > 0) ? 50 : 0; }
 
 void skinLumaUniformity(ImageF& g, const Params& p, float scale) {
-    if (!p.enabled.skin || p.skinUniLum <= 0) return;
+    if (!p.enabled.skin || (p.skinUniLum <= 0 && p.skinSmooth <= 0)) return;
     const int w = g.width, h = g.height;
     const size_t n = size_t(w) * h;
     std::vector<float> Y(n), M(n);
@@ -71,19 +72,35 @@ void skinLumaUniformity(ImageF& g, const Params& p, float scale) {
             Y[i] = c[0] * kLuma[0] + c[1] * kLuma[1] + c[2] * kLuma[2];
         }
     });
-    // 肌の部分だけの平均（肌以外の明るさが混ざらないよう、マスクで重み付け）
-    std::vector<float> YM(n), Mb = M;
-    for (size_t i = 0; i < n; ++i) YM[i] = Y[i] * M[i];
-    const float sigma = std::max(1.0f, 12.0f * scale);  // フル解像度で 12px：シミ・ムラの大きさ
-    gaussianBlur(YM, w, h, sigma);
-    gaussianBlur(Mb, w, h, sigma);
-    const float k = p.skinUniLum / 100.0f * 0.85f;
+    // 肌の部分だけでぼかす（髪・背景の明るさが混ざらないよう、マスクで重み付けして割る）
+    auto skinBlur = [&](float sigma) {
+        std::vector<float> ym(n), mb = M;
+        for (size_t i = 0; i < n; ++i) ym[i] = Y[i] * M[i];
+        gaussianBlur(ym, w, h, sigma);
+        gaussianBlur(mb, w, h, sigma);
+        for (size_t i = 0; i < n; ++i) ym[i] = mb[i] > 1e-3f ? ym[i] / mb[i] : Y[i];
+        return ym;
+    };
+    // 大きさで分ける：細かい（毛穴・肌理）＜ 1.5px ＜ 中くらい（シミ・ムラ・小じわ）＜ 14px ＜ 大きい（顔の立体感）
+    const std::vector<float> large = skinBlur(std::max(1.0f, 14.0f * scale));
+    std::vector<float> small;
+    if (p.skinSmooth > 0) small = skinBlur(std::max(0.5f, 1.5f * scale));
+    const float uni = p.skinUniLum / 100.0f * 0.85f;
+    const float sm = p.skinSmooth / 100.0f;
+    const float keepFine = 0.4f + 0.6f * p.skinTexture / 100.0f;  // 質感を残す：細かい成分をどれだけ残すか
     parallelFor(h, [&](int y0, int y1) {
         for (size_t i = size_t(y0) * w; i < size_t(y1) * w; ++i) {
-            if (M[i] <= 0 || Mb[i] < 1e-3f) continue;
-            const float local = YM[i] / Mb[i];
-            const float d = (local - Y[i]) * k * M[i];
-            // 明るさだけ動かす（色はそのまま）
+            const float m = M[i];
+            if (m <= 0) continue;
+            float ny = Y[i];
+            if (sm > 0) {
+                const float fine = Y[i] - small[i], mid = small[i] - large[i];
+                // 大きな明暗差（鼻・唇・目の輪郭、ほうれい線の影）は残し、小さなムラだけを和らげる
+                const float edge = std::exp(-(mid * mid) / (0.05f * 0.05f));
+                ny = large[i] + mid * (1.0f - 0.8f * sm * m * edge) + fine * (1.0f - sm * m * (1.0f - keepFine));
+            }
+            if (uni > 0) ny += (large[i] - ny) * uni * m * 0.5f;
+            const float d = ny - Y[i];
             for (int c = 0; c < 3; ++c) g.data[i * 3 + c] = std::clamp(g.data[i * 3 + c] + d, 0.0f, 1.0f);
         }
     });

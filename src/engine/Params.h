@@ -44,6 +44,7 @@ struct Params {
     // 肌色（色相：−＝赤み＋＝黄み、彩度・明るさ：−100..100、均一化 0..100）
     float skinHue = 0, skinSat = 0, skinLum = 0;
     float skinUniHue = 0, skinUniSat = 0, skinUniLum = 0;
+    float skinSmooth = 0, skinTexture = 50;  // なめらかさ・質感を残す
     float skinCenterHue = 22, skinCenterSat = 0.40f, skinRange = 50;  // 肌とみなす色の中心と幅
     bool skinMaskView = false;  // 肌の範囲を表示（保存しない、画面だけ）
     // レンズ補正

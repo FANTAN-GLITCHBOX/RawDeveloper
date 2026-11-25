@@ -228,6 +228,9 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
     row(skin, "skin.uni_hue", QStringLiteral("色相"), 0, 100, 0, 0, 1);
     row(skin, "skin.uni_sat", QStringLiteral("彩度"), 0, 100, 0, 0, 1);
     row(skin, "skin.uni_lum", QStringLiteral("明るさ"), 0, 100, 0, 0, 1);
+    skin->add(hint(QStringLiteral("なめらかさ（シミ・ムラ・小じわを和らげる）")));
+    row(skin, "skin.smooth", QStringLiteral("なめらかさ"), 0, 100, 0, 0, 1);
+    row(skin, "skin.texture", QStringLiteral("　質感を残す"), 0, 100, 50, 0, 1);
     row(skin, "skin.range", QStringLiteral("範囲"), 0, 100, 50, 0, 1);
     skin->add(hint(QStringLiteral("色相：−で赤み、＋で黄み。範囲：肌とみなす色の広さ（「肌の範囲を表示」で確認）")));
     addSection(skin, Panel::Skin);
@@ -487,6 +490,8 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
     rows_["skin.uni_sat"]->setValue(p_.skinUniSat);
     rows_["skin.uni_lum"]->setValue(p_.skinUniLum);
     rows_["skin.range"]->setValue(p_.skinRange);
+    rows_["skin.smooth"]->setValue(p_.skinSmooth);
+    rows_["skin.texture"]->setValue(p_.skinTexture);
     p_.skinMaskView = skinMask_->isChecked();
     rows_["nr.luma_detail"]->setValue(p_.nrLumaDetail);
     rows_["nr.luma_contrast"]->setValue(p_.nrLumaContrast);
@@ -604,7 +609,7 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
                                               {"nr.color", "カラーノイズ"}, {"skin.hue", "肌の色相"}, {"skin.sat", "肌の彩度"},
                                               {"skin.lum", "肌の明るさ"}, {"skin.uni_hue", "肌の均一化（色相）"},
                                               {"skin.uni_sat", "肌の均一化（彩度）"}, {"skin.uni_lum", "肌の均一化（明るさ）"},
-                                              {"skin.range", "肌の範囲"}, {"nr.luma_detail", "輝度ノイズのディテール"},
+                                              {"skin.range", "肌の範囲"}, {"skin.smooth", "肌のなめらかさ"}, {"skin.texture", "肌の質感"}, {"nr.luma_detail", "輝度ノイズのディテール"},
                                               {"nr.luma_contrast", "輝度ノイズのコントラスト"}, {"nr.color_detail", "カラーノイズのディテール"},
                                               {"nr.color_smooth", "カラーノイズの滑らかさ"}, {"crop.angle", "角度"},
                                               {"lens.distortion", "歪曲（プロファイル）"}, {"lens.vignetting", "周辺光量（プロファイル）"},
@@ -642,6 +647,8 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
     else if (key == "skin.uni_sat") p_.skinUniSat = f;
     else if (key == "skin.uni_lum") p_.skinUniLum = f;
     else if (key == "skin.range") p_.skinRange = f;
+    else if (key == "skin.smooth") p_.skinSmooth = f;
+    else if (key == "skin.texture") p_.skinTexture = f;
     else if (key == "nr.luma_detail") p_.nrLumaDetail = f;
     else if (key == "nr.luma_contrast") p_.nrLumaContrast = f;
     else if (key == "nr.color_detail") p_.nrColorDetail = f;
