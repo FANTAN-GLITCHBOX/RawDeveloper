@@ -20,14 +20,17 @@
 #include <QStandardPaths>
 #include <QVBoxLayout>
 
+#include <cmath>
+#include <cstring>
+
 namespace rd {
 
 namespace {
 QJsonObject builtin(const QString& name) {
     if (name == QStringLiteral("SNS 用（長辺 2048px・JPEG）"))
-        return {{"fmt", "jpeg"}, {"quality", 88}, {"long_edge", 2048}, {"sharpen", "screen"}, {"sharpen_level", 2}};
+        return {{"fmt", "jpeg"}, {"jpeg_level", "normal"}, {"quality", 85}, {"long_edge", 2048}, {"sharpen", "screen"}, {"sharpen_level", 2}};
     if (name == QStringLiteral("印刷用（TIFF 16bit・元サイズ）")) return {{"fmt", "tiff"}, {"quality", 100}, {"long_edge", 0}};
-    if (name == QStringLiteral("納品用（JPEG 最高画質・元サイズ）")) return {{"fmt", "jpeg"}, {"quality", 97}, {"long_edge", 0}};
+    if (name == QStringLiteral("納品用（JPEG 最高画質・元サイズ）")) return {{"fmt", "jpeg"}, {"jpeg_level", "max"}, {"quality", 98}, {"long_edge", 0}};
     return {};
 }
 const QStringList kBuiltins{QStringLiteral("SNS 用（長辺 2048px・JPEG）"), QStringLiteral("印刷用（TIFF 16bit・元サイズ）"),
@@ -83,8 +86,22 @@ ExportDialog::ExportDialog(int nSelected, int nFiltered, QWidget* parent) : QDia
     fmt_->addItem("JPEG", "jpeg");
     fmt_->addItem(QStringLiteral("TIFF（16bit）"), "tiff");
     fmt_->addItem(QStringLiteral("PNG（8bit）"), "png");
+    jpegLevel_ = new QComboBox;
+    jpegLevel_->addItem(QStringLiteral("普通（SNS・Web）"), "normal");
+    jpegLevel_->addItem(QStringLiteral("高画質（保存・人に渡す）"), "high");
+    jpegLevel_->addItem(QStringLiteral("最高画質（印刷・再編集）"), "max");
+    jpegLevel_->addItem(QStringLiteral("カスタム"), "custom");
+    jpegLevel_->setToolTip(QStringLiteral("普通：品質 85・色の間引きあり（4:2:0）\n高画質：品質 92・色を間引かない（4:4:4）\n"
+                                          "最高画質：品質 98・色を間引かない（4:4:4）\nカスタム：数値を指定（90 以上は 4:4:4）"));
     quality_ = new QSpinBox;
     quality_->setRange(50, 100);
+    quality_->setToolTip(QStringLiteral("数値を変えるとカスタムになります"));
+    estimate_ = new QLabel;
+    estimate_->setStyleSheet("color: gray;");
+    auto* qrow = new QHBoxLayout;
+    qrow->addWidget(jpegLevel_, 1);
+    qrow->addWidget(new QLabel(QStringLiteral("品質")));
+    qrow->addWidget(quality_);
     longEdge_ = new QSpinBox;
     longEdge_->setRange(0, 20000);
     longEdge_->setSingleStep(256);
@@ -92,7 +109,8 @@ ExportDialog::ExportDialog(int nSelected, int nFiltered, QWidget* parent) : QDia
     auto* space = new QComboBox;
     space->addItem(QStringLiteral("sRGB（ICC プロファイル埋め込み）"));
     f2->addRow(QStringLiteral("形式"), fmt_);
-    f2->addRow(QStringLiteral("画質（JPEG）"), quality_);
+    f2->addRow(QStringLiteral("画質（JPEG）"), qrow);
+    f2->addRow(QString(), estimate_);
     f2->addRow(QStringLiteral("長辺のピクセル数"), longEdge_);
     f2->addRow(QStringLiteral("色空間"), space);
     auto* sh = new QHBoxLayout;
@@ -152,6 +170,30 @@ ExportDialog::ExportDialog(int nSelected, int nFiltered, QWidget* parent) : QDia
     connect(bb, &QDialogButtonBox::rejected, this, &ExportDialog::reject);
     v->addWidget(bb);
 
+    connect(jpegLevel_, &QComboBox::currentIndexChanged, this, [this] {
+        const QString lv = jpegLevel_->currentData().toString();
+        if (lv != "custom") {
+            settingLevel_ = true;
+            quality_->setValue(jpegSetting(lv, quality_->value()).quality);
+            settingLevel_ = false;
+        }
+        updateEstimate();
+    });
+    connect(quality_, &QSpinBox::valueChanged, this, [this] {
+        if (!settingLevel_ && jpegLevel_->currentData() != "custom") {
+            settingLevel_ = true;
+            jpegLevel_->setCurrentIndex(jpegLevel_->findData("custom"));
+            settingLevel_ = false;
+        }
+        updateEstimate();
+    });
+    connect(fmt_, &QComboBox::currentIndexChanged, this, [this] {
+        const bool jpg = fmt_->currentData() == "jpeg";
+        jpegLevel_->setEnabled(jpg);
+        quality_->setEnabled(jpg);
+        updateEstimate();
+    });
+    connect(longEdge_, &QSpinBox::valueChanged, this, [this] { updateEstimate(); });
     connect(same_, &QCheckBox::toggled, this, [this](bool on) { folder_->setEnabled(!on); });
     connect(browse, &QPushButton::clicked, this, [this] {
         const QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("書き出し先フォルダ"), folder_->text());
@@ -181,7 +223,12 @@ ExportDialog::ExportDialog(int nSelected, int nFiltered, QWidget* parent) : QDia
 
 void ExportDialog::load(const ExportOptions& o) {
     fmt_->setCurrentIndex(std::max(0, fmt_->findData(o.fmt)));
-    quality_->setValue(o.quality);
+    settingLevel_ = true;
+    jpegLevel_->setCurrentIndex(std::max(0, jpegLevel_->findData(o.jpegLevel)));
+    quality_->setValue(jpegSetting(o).quality);
+    settingLevel_ = false;
+    jpegLevel_->setEnabled(o.fmt == "jpeg");
+    quality_->setEnabled(o.fmt == "jpeg");
     longEdge_->setValue(o.longEdge);
     same_->setChecked(o.sameFolder);
     folder_->setText(QDir::toNativeSeparators(
@@ -195,6 +242,46 @@ void ExportDialog::load(const ExportOptions& o) {
     sharpenLevel_->setCurrentIndex(std::max(0, sharpenLevel_->findData(o.sharpenLevel)));
     sharpenLevel_->setEnabled(o.sharpen != "none");
     addLib_->setChecked(o.addToLibrary);
+    updateEstimate();
+}
+
+void ExportDialog::setSample(const QImage& img, QSize fullOut) {
+    if (img.isNull() || fullOut.isEmpty()) return;
+    QImage s = img.convertToFormat(QImage::Format_RGB888);
+    if (std::max(s.width(), s.height()) > 1200) s = s.scaled(1200, 1200, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    sampleW_ = s.width();
+    sampleH_ = s.height();
+    sample_.resize(static_cast<size_t>(sampleW_) * sampleH_ * 3);
+    for (int y = 0; y < sampleH_; ++y)
+        memcpy(&sample_[static_cast<size_t>(y) * sampleW_ * 3], s.constScanLine(y), static_cast<size_t>(sampleW_) * 3);
+    fullOut_ = fullOut;
+    updateEstimate();
+}
+
+void ExportDialog::updateEstimate() {
+    if (!estimate_) return;
+    if (fmt_->currentData() != "jpeg") {
+        estimate_->clear();
+        return;
+    }
+    const JpegSetting js = jpegSetting(jpegLevel_->currentData().toString(), quality_->value());
+    QString text = QStringLiteral("品質 %1・%2").arg(js.quality).arg(js.chroma444 ? QStringLiteral("色の間引きなし（4:4:4）")
+                                                                                  : QStringLiteral("色の間引きあり（4:2:0）"));
+    if (!sample_.empty()) {
+        int ow = fullOut_.width(), oh = fullOut_.height();
+        const int le = longEdge_->value();
+        if (le > 0 && std::max(ow, oh) > le) {
+            const double k = double(le) / std::max(ow, oh);
+            ow = std::max(1, int(std::lround(ow * k)));
+            oh = std::max(1, int(std::lround(oh * k)));
+        }
+        const qint64 b = estimateJpegBytes(sample_.data(), sampleW_, sampleH_, ow, oh, js);
+        if (b > 0) {
+            const QString sz = b >= 1024 * 1024 ? QString::number(b / 1048576.0, 'f', 1) + " MB" : QString::number(b / 1024) + " KB";
+            text += QStringLiteral("\n1 枚あたり約 %1（%2×%3、表示中の写真で計算）").arg(sz).arg(ow).arg(oh);
+        }
+    }
+    estimate_->setText(text);
 }
 
 ExportOptions ExportDialog::options() const {
@@ -204,6 +291,7 @@ ExportOptions ExportDialog::options() const {
     o.subfolder = subfolder_->text().trimmed();
     o.fmt = fmt_->currentData().toString();
     o.quality = quality_->value();
+    o.jpegLevel = jpegLevel_->currentData().toString();
     o.longEdge = longEdge_->value();
     o.nameTemplate = template_->text().isEmpty() ? "{name}" : template_->text();
     o.suffix = suffix_->text();

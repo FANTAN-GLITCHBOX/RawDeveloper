@@ -1890,6 +1890,10 @@ void MainWindow::exportDialog() {
     const QStringList all = filteredPaths();
     if (all.isEmpty()) return;
     ExportDialog dlg(sel.size(), all.size(), this);
+    if (s_ && s_->src && !s_->last.isNull()) {
+        const auto [ow, oh] = outputSize(s_->params, s_->src->meta.fullWidth, s_->src->meta.fullHeight);
+        dlg.setSample(s_->last, QSize(ow, oh));
+    }
     if (dlg.exec() != QDialog::Accepted) return;
     const ExportOptions o = dlg.options();
     QStringList targets;

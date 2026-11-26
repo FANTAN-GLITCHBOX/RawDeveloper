@@ -4,6 +4,7 @@
   "dependencies": [
     "libraw",
     "lensfun",
+    "libjpeg-turbo",
     "tiff",
     "zlib"
   ]

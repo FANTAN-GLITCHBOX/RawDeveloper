@@ -13,6 +13,7 @@ endif()
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent Sql OpenGL)
 find_package(TIFF REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(JPEG REQUIRED)
 
 # LibRaw：Windows では vcpkg、Linux（開発用）では pkg-config
 find_package(libraw CONFIG QUIET)
@@ -82,7 +83,7 @@ add_library(rdcore STATIC
   src/core/Export.h src/core/Export.cpp
 
     src/core/CameraRef.h src/core/CameraRef.cpp)
-target_link_libraries(rdcore PUBLIC rdengine Qt6::Gui Qt6::Sql TIFF::TIFF ZLIB::ZLIB)
+target_link_libraries(rdcore PUBLIC rdengine Qt6::Gui Qt6::Sql TIFF::TIFF ZLIB::ZLIB JPEG::JPEG)
 
 # GPU（OpenGL 4.3 コンピュートシェーダー）
 add_library(rdgpu STATIC src/gpu/GlBackend.h src/gpu/GlBackend.cpp)

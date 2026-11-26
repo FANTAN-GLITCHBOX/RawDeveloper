@@ -1,6 +1,7 @@
 // 評価・書き出しの確認：書き出し → 読み戻し → 書き換え → 読み戻し
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QGuiApplication>
 #include <QImage>
 #include <cstdio>
@@ -45,6 +46,39 @@ int main(int argc, char** argv) {
                     r1.rating.value_or(-9), qPrintable(r1.label), qPrintable(where), r2.rating.value_or(-9),
                     qPrintable(r2.label), img.width(), img.height(), ok ? "OK" : "NG");
         if (!ok) ++fails;
+    }
+    // JPEG の画質段階：普通 < 高画質 < 最高画質、4:2:0 / 4:4:4、sRGB の ICC が入る
+    {
+        qint64 prev = 0;
+        bool jok = true;
+        for (const char* lv : {"normal", "high", "max"}) {
+            rd::ExportOptions o;
+            o.folder = dir;
+            o.fmt = "jpeg";
+            o.jpegLevel = lv;
+            o.overwrite = "overwrite";
+            o.suffix = QString("-") + lv;
+            const QString path = rd::exportPath(dir + "/q.dng", o, 1);
+            const QString err = rd::writeExport(g, path, o, 0, QString(), &meta);
+            QFile f(path);
+            f.open(QIODevice::ReadOnly);
+            const QByteArray d = f.readAll();
+            // SOF の Y 成分の間引き係数（0x22 = 4:2:0、0x11 = 4:4:4）
+            int samp = 0;
+            for (int i = 0; i + 12 < d.size(); ++i)
+                if (uchar(d[i]) == 0xFF && (uchar(d[i + 1]) == 0xC0 || uchar(d[i + 1]) == 0xC2)) {
+                    samp = uchar(d[i + 11]);
+                    break;
+                }
+            const bool icc = d.contains("ICC_PROFILE");
+            const QImage img(path);
+            const bool want444 = QString(lv) != "normal";
+            const bool ok = err.isEmpty() && !img.isNull() && icc && d.size() > prev && samp == (want444 ? 0x11 : 0x22);
+            std::printf("jpeg %-6s %lld bytes samp:%02x icc:%d %s\n", lv, (long long)d.size(), samp, icc, ok ? "OK" : "NG");
+            jok = jok && ok;
+            prev = d.size();
+        }
+        if (!jok) ++fails;
     }
     // カタログ
     auto& c = rd::Catalog::get();

@@ -3,6 +3,11 @@
 
 #include <tiffio.h>
 
+#include <cmath>
+#include <csetjmp>
+#include <cstdio>
+#include <jpeglib.h>
+
 #include <algorithm>
 
 #include <QBuffer>
@@ -22,7 +27,7 @@ namespace rd {
 
 QJsonObject ExportOptions::toJson() const {
     return QJsonObject{{"folder", folder},       {"same_folder", sameFolder}, {"subfolder", subfolder},
-                       {"fmt", fmt},             {"quality", quality},        {"long_edge", longEdge},
+                       {"fmt", fmt},             {"quality", quality},        {"jpeg_level", jpegLevel},        {"long_edge", longEdge},
                        {"name_template", nameTemplate}, {"suffix", suffix},  {"embed_rating", embedRating},
                        {"overwrite", overwrite}, {"add_to_library", addToLibrary}, {"sharpen", sharpen},
                        {"sharpen_level", sharpenLevel}};
@@ -35,6 +40,7 @@ ExportOptions ExportOptions::fromJson(const QJsonObject& o) {
     e.subfolder = o.value("subfolder").toString();
     e.fmt = o.value("fmt").toString("jpeg");
     e.quality = o.value("quality").toInt(92);
+    e.jpegLevel = o.value("jpeg_level").toString(jpegLevelFromQuality(e.quality));
     e.longEdge = o.value("long_edge").toInt(0);
     e.sharpen = o.value("sharpen").toString("none");
     e.sharpenLevel = o.value("sharpen_level").toInt(2);
@@ -44,6 +50,89 @@ ExportOptions ExportOptions::fromJson(const QJsonObject& o) {
     e.overwrite = o.value("overwrite").toString("rename");
     e.addToLibrary = o.value("add_to_library").toBool(true);
     return e;
+}
+
+JpegSetting jpegSetting(const QString& level, int customQuality) {
+    if (level == "normal") return {85, false};
+    if (level == "high") return {92, true};
+    if (level == "max") return {98, true};
+    const int q = std::clamp(customQuality, 1, 100);
+    return {q, q >= 90};  // カスタム：90 以上は色を間引かない
+}
+
+QString jpegLevelFromQuality(int q) {
+    if (q == 85) return "normal";
+    if (q == 92) return "high";
+    if (q == 98) return "max";
+    return "custom";
+}
+
+namespace {
+struct JErr {
+    jpeg_error_mgr mgr;
+    std::jmp_buf jb;
+};
+void jErrExit(j_common_ptr c) { std::longjmp(reinterpret_cast<JErr*>(c->err)->jb, 1); }
+void jOutput(j_common_ptr) {}
+}  // namespace
+
+QByteArray encodeJpeg(const std::uint8_t* rgb, int w, int h, const JpegSetting& s, const QByteArray& icc) {
+    if (!rgb || w <= 0 || h <= 0) return {};
+    jpeg_compress_struct c{};
+    JErr err{};
+    c.err = jpeg_std_error(&err.mgr);
+    err.mgr.error_exit = jErrExit;
+    err.mgr.output_message = jOutput;
+    unsigned char* out = nullptr;
+    unsigned long size = 0;
+    if (setjmp(err.jb)) {
+        jpeg_destroy_compress(&c);
+        free(out);
+        return {};
+    }
+    jpeg_create_compress(&c);
+    jpeg_mem_dest(&c, &out, &size);
+    c.image_width = static_cast<JDIMENSION>(w);
+    c.image_height = static_cast<JDIMENSION>(h);
+    c.input_components = 3;
+    c.in_color_space = JCS_RGB;
+    jpeg_set_defaults(&c);
+    jpeg_set_quality(&c, std::clamp(s.quality, 1, 100), TRUE);
+    c.optimize_coding = TRUE;
+    // 色の間引き：4:2:0（横・縦とも半分）か 4:4:4（間引かない）
+    const int f = s.chroma444 ? 1 : 2;
+    c.comp_info[0].h_samp_factor = f;
+    c.comp_info[0].v_samp_factor = f;
+    c.comp_info[1].h_samp_factor = c.comp_info[1].v_samp_factor = 1;
+    c.comp_info[2].h_samp_factor = c.comp_info[2].v_samp_factor = 1;
+    // 品質 90 以上は浮動小数の DCT（わずかに正確）
+    if (s.quality >= 90) c.dct_method = JDCT_FLOAT;
+    jpeg_start_compress(&c, TRUE);
+    if (!icc.isEmpty())
+        jpeg_write_icc_profile(&c, reinterpret_cast<const JOCTET*>(icc.constData()), static_cast<unsigned>(icc.size()));
+    const size_t stride = static_cast<size_t>(w) * 3;
+    while (c.next_scanline < c.image_height) {
+        JSAMPROW row = const_cast<JSAMPROW>(rgb + c.next_scanline * stride);
+        jpeg_write_scanlines(&c, &row, 1);
+    }
+    jpeg_finish_compress(&c);
+    QByteArray data(reinterpret_cast<const char*>(out), static_cast<qsizetype>(size));
+    jpeg_destroy_compress(&c);
+    free(out);
+    return data;
+}
+
+qint64 estimateJpegBytes(const std::uint8_t* rgb, int w, int h, int outW, int outH, const JpegSetting& s) {
+    if (!rgb || w <= 0 || h <= 0 || outW <= 0 || outH <= 0) return 0;
+    const QByteArray d = encodeJpeg(rgb, w, h, s);
+    if (d.isEmpty()) return 0;
+    const double bpp = double(d.size() - 600) / (double(w) * h);  // ヘッダー分を除いた 1 画素あたり
+    // 縮小画像は細部が詰まっていて画素あたりが重いので、大きく書き出すほど少し軽くする
+    const double ratio = std::max(1.0, std::sqrt(double(outW) * outH / (double(w) * h)));
+    // 高品質ほど細かいノイズまで残るので、大きくしても軽くなりにくい
+    const double ex = std::clamp(0.45 - (s.quality - 85) * 0.0285, 0.05, 0.5);
+    const double corr = std::pow(ratio, -ex);
+    return static_cast<qint64>(bpp * corr * double(outW) * outH) + 600 + 30000;  // EXIF・ICC など
 }
 
 QString exportExtension(const QString& fmt) {
@@ -197,18 +286,20 @@ QString writeExport(const ImageF& gIn, const QString& path, const ExportOptions&
         if (!err.isEmpty()) return err;
     } else {
         const auto px = toRgb8(g);
-        QImage img(g.width, g.height, QImage::Format_RGB888);
-        for (int y = 0; y < g.height; ++y) memcpy(img.scanLine(y), px.data() + static_cast<size_t>(y) * g.width * 3, g.width * 3);
-        img.setColorSpace(QColorSpace(QColorSpace::SRgb));
-        QBuffer buf;
-        buf.open(QIODevice::WriteOnly);
-        QImageWriter w(&buf, o.fmt == "png" ? "png" : "jpg");
-        if (o.fmt != "png") {
-            w.setQuality(o.quality);
-            w.setOptimizedWrite(true);
+        QByteArray data;
+        if (o.fmt == "png") {
+            QImage img(g.width, g.height, QImage::Format_RGB888);
+            for (int y = 0; y < g.height; ++y) memcpy(img.scanLine(y), px.data() + static_cast<size_t>(y) * g.width * 3, g.width * 3);
+            img.setColorSpace(QColorSpace(QColorSpace::SRgb));
+            QBuffer buf;
+            buf.open(QIODevice::WriteOnly);
+            QImageWriter w(&buf, "png");
+            if (!w.write(img)) return w.errorString();
+            data = buf.data();
+        } else {
+            data = encodeJpeg(px.data(), g.width, g.height, jpegSetting(o), icc);
+            if (data.isEmpty()) return QStringLiteral("JPEG に変換できません");
         }
-        if (!w.write(img)) return w.errorString();
-        QByteArray data = buf.data();
         if (o.fmt == "png") {
             if (meta2) data = xmp::pngWithXmp(data, r, lb);
         } else {
