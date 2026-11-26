@@ -30,7 +30,8 @@ const std::vector<PasteGroup>& pasteGroups() {
         {"wb", "ホワイトバランス", {"wb", "enabled.basic"}},
         {"exposure", "露出", {"exposure", "enabled.basic"}},
         {"tone", "コントラスト・ハイライト・シャドウ・白・黒", {"contrast", "highlights", "shadows", "whites", "blacks", "enabled.basic"}},
-        {"presence", "彩度・自然な彩度", {"saturation", "vibrance", "enabled.basic"}},
+        {"presence", "彩度・自然な彩度・テクスチャ・明瞭度・かすみの除去",
+         {"saturation", "vibrance", "texture", "clarity", "dehaze", "enabled.basic"}},
         {"wheels", "カラーホイール", {"wheels", "enabled.wheels"}},
         {"curve", "トーンカーブ", {"curve", "enabled.curve"}},
         {"hsl", "HSL", {"hsl", "enabled.hsl"}},
@@ -63,7 +64,7 @@ void setKey(QJsonObject& o, const QString& key, const QJsonValue& v) {
     o[key.left(dot)] = sub;
 }
 const QStringList& allKeys() {
-    static const QStringList k{"wb",     "exposure",       "contrast",       "highlights",    "shadows",
+    static const QStringList k{"wb",     "exposure",       "contrast", "texture", "clarity", "dehaze",       "highlights",    "shadows",
                                "whites", "blacks",         "saturation",     "vibrance",      "curve",
                                "hsl",    "wheels",         "sharpen",        "nr",            "lens",
                                "crop",   "enabled.basic",  "enabled.wheels", "enabled.curve", "enabled.hsl",

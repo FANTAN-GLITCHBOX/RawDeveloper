@@ -22,6 +22,8 @@ struct ExportOptions {
     bool embedRating = true;
     QString overwrite = "rename";  // rename | overwrite | skip
     bool addToLibrary = true;
+    QString sharpen = "none";    // 書き出し時のシャープ：none | screen | glossy | matte
+    int sharpenLevel = 2;        // 1 弱 2 標準 3 強
 
     QJsonObject toJson() const;
     static ExportOptions fromJson(const QJsonObject& o);

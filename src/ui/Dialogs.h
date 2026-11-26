@@ -24,7 +24,7 @@ public:
 
 private:
     void load(const ExportOptions& o);
-    QComboBox *preset_, *fmt_, *overwrite_;
+    QComboBox *preset_, *fmt_, *overwrite_, *sharpen_, *sharpenLevel_;
     QSpinBox *quality_, *longEdge_, *minStar_;
     QCheckBox *same_, *embed_, *addLib_;
     QLineEdit *folder_, *subfolder_, *template_, *suffix_;

@@ -84,6 +84,17 @@ int main(int argc, char** argv) {
     Params sh = lc;
     sh.sharpenAmount = 60; sh.sharpenRadius = 1.5f; sh.sharpenMasking = 30;
     cases.push_back({"sharpen", sh});
+    Params ef = t;
+    ef.texture = 40; ef.clarity = 35; ef.dehaze = 30; ef.sharpenAmount = 50; ef.sharpenDetail = 25;
+    cases.push_back({"tex/clar/haze", ef});
+    Params ef2 = ef;
+    ef2.texture = -50; ef2.clarity = -40; ef2.dehaze = -40;
+    cases.push_back({"negative", ef2});
+    Params lm = ef;
+    LocalMask bg; bg.type = "radial"; bg.x0 = 0.6f; bg.y0 = 0.35f; bg.x1 = 0.2f; bg.y1 = 0.15f; bg.invert = true; bg.sharpness = -80; lm.masks.push_back(bg);
+    LocalMask fc; fc.type = "radial"; fc.x0 = 0.6f; fc.y0 = 0.35f; fc.x1 = 0.12f; fc.y1 = 0.09f; fc.sharpness = 60; fc.clarity = -30; fc.texture = -40; lm.masks.push_back(fc);
+    LocalMask hz; hz.type = "linear"; hz.x0 = 0.5f; hz.y0 = 0; hz.x1 = 0.5f; hz.y1 = 0.4f; hz.dehaze = 60; lm.masks.push_back(hz);
+    cases.push_back({"mask effects", lm});
 
     int bad = 0;
     for (auto& c : cases) {

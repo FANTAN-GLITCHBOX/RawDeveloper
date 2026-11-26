@@ -141,6 +141,10 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
         row(basic, "shadows", QStringLiteral("シャドウ"), -100, 100, 0, 0, 1);
         row(basic, "whites", QStringLiteral("白レベル"), -100, 100, 0, 0, 1);
         row(basic, "blacks", QStringLiteral("黒レベル"), -100, 100, 0, 0, 1);
+        basic->add(hint(QStringLiteral("質感（＋でくっきり、−で柔らかく）")));
+        row(basic, "texture", QStringLiteral("テクスチャ"), -100, 100, 0, 0, 1);
+        row(basic, "clarity", QStringLiteral("明瞭度"), -100, 100, 0, 0, 1);
+        row(basic, "dehaze", QStringLiteral("かすみの除去"), -100, 100, 0, 0, 1);
         row(basic, "vibrance", QStringLiteral("自然な彩度"), -100, 100, 0, 0, 1);
         row(basic, "saturation", QStringLiteral("彩度"), -100, 100, 0, 0, 1);
     }
@@ -377,6 +381,10 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
         lrow("local.temp", "色温度", -100, 100, 0, 1, {{0, QColor("#4a78c8")}, {0.5, QColor("#888")}, {1, QColor("#d8a640")}});
         lrow("local.tint", "色かぶり", -100, 100, 0, 1, {{0, QColor("#4caf50")}, {0.5, QColor("#888")}, {1, QColor("#c050c0")}});
         lrow("local.saturation", "彩度", -100, 100, 0, 1);
+        lrow("local.texture", "テクスチャ", -100, 100, 0, 1);
+        lrow("local.clarity", "明瞭度", -100, 100, 0, 1);
+        lrow("local.dehaze", "かすみの除去", -100, 100, 0, 1);
+        lrow("local.sharpness", "シャープ（−でぼかし）", -100, 100, 0, 1);
         lrow("local.feather", "ぼかし", 0, 100, 0, 1);
         rows_["local.feather"]->setValue(50);
         local->add(maskRows_);
@@ -420,6 +428,7 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
     auto* detail = new Section(QStringLiteral("ディテール"), true);
     row(detail, "sharpen.amount", QStringLiteral("シャープ 量"), 0, 150, 40, 0, 1);
     row(detail, "sharpen.radius", QStringLiteral("半径"), 0.5, 3.0, 1.0, 1, 0.1);
+    row(detail, "sharpen.detail", QStringLiteral("ディテール"), 0, 100, 25, 0, 1);
     row(detail, "sharpen.masking", QStringLiteral("マスク"), 0, 100, 0, 0, 1);
     detail->add(hint(QStringLiteral("ノイズ軽減")));
     row(detail, "nr.luma", QStringLiteral("輝度"), 0, 100, 0, 0, 1);
@@ -650,6 +659,9 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
     rows_["shadows"]->setValue(p_.shadows);
     rows_["whites"]->setValue(p_.whites);
     rows_["blacks"]->setValue(p_.blacks);
+    rows_["texture"]->setValue(p_.texture);
+    rows_["clarity"]->setValue(p_.clarity);
+    rows_["dehaze"]->setValue(p_.dehaze);
     rows_["vibrance"]->setValue(p_.vibrance);
     rows_["saturation"]->setValue(p_.saturation);
     const Wheel ws[4] = {p_.lift, p_.gamma, p_.gain, p_.offset};
@@ -663,6 +675,7 @@ void DevelopPanel::setParams(const Params& p, std::pair<double, double> asShot) 
     rows_["sharpen.amount"]->setValue(p_.sharpenAmount);
     rows_["sharpen.radius"]->setValue(p_.sharpenRadius);
     rows_["sharpen.masking"]->setValue(p_.sharpenMasking);
+    rows_["sharpen.detail"]->setValue(p_.sharpenDetail);
     rows_["nr.luma"]->setValue(p_.nrLuma);
     rows_["nr.color"]->setValue(p_.nrColor);
     rows_["skin.hue"]->setValue(p_.skinHue);
@@ -835,6 +848,10 @@ void DevelopPanel::updateMaskRows() {
     rows_["local.tint"]->setValue(m.tint);
     rows_["local.saturation"]->setValue(m.saturation);
     rows_["local.feather"]->setValue(m.feather);
+    rows_["local.texture"]->setValue(m.texture);
+    rows_["local.clarity"]->setValue(m.clarity);
+    rows_["local.dehaze"]->setValue(m.dehaze);
+    rows_["local.sharpness"]->setValue(m.sharpness);
     updating_ = old;
 }
 
@@ -853,7 +870,10 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
                                               {"shadows", "シャドウ"}, {"whites", "白レベル"}, {"blacks", "黒レベル"},
                                               {"vibrance", "自然な彩度"}, {"saturation", "彩度"},
                                               {"sharpen.amount", "シャープ"}, {"sharpen.radius", "シャープ半径"},
-                                              {"sharpen.masking", "シャープのマスク"}, {"nr.luma", "輝度ノイズ"},
+                                              {"sharpen.masking", "シャープのマスク"}, {"sharpen.detail", "シャープのディテール"},
+                                              {"texture", "テクスチャ"}, {"clarity", "明瞭度"}, {"dehaze", "かすみの除去"},
+                                              {"local.sharpness", "部分補正：シャープ"}, {"local.clarity", "部分補正：明瞭度"},
+                                              {"local.texture", "部分補正：テクスチャ"}, {"local.dehaze", "部分補正：かすみの除去"}, {"nr.luma", "輝度ノイズ"},
                                               {"nr.color", "カラーノイズ"}, {"skin.hue", "肌の色相"}, {"skin.sat", "肌の彩度"},
                                               {"skin.lum", "肌の明るさ"}, {"skin.uni_hue", "肌の均一化（色相）"},
                                               {"skin.uni_sat", "肌の均一化（彩度）"}, {"skin.uni_lum", "肌の均一化（明るさ）"},
@@ -884,11 +904,15 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
     else if (key == "shadows") p_.shadows = f;
     else if (key == "whites") p_.whites = f;
     else if (key == "blacks") p_.blacks = f;
+    else if (key == "texture") p_.texture = f;
+    else if (key == "clarity") p_.clarity = f;
+    else if (key == "dehaze") p_.dehaze = f;
     else if (key == "vibrance") p_.vibrance = f;
     else if (key == "saturation") p_.saturation = f;
     else if (key == "sharpen.amount") p_.sharpenAmount = f;
     else if (key == "sharpen.radius") p_.sharpenRadius = f;
     else if (key == "sharpen.masking") p_.sharpenMasking = f;
+    else if (key == "sharpen.detail") p_.sharpenDetail = f;
     else if (key == "nr.luma") p_.nrLuma = f;
     else if (key == "nr.color") p_.nrColor = f;
     else if (key.startsWith("local.")) {
@@ -903,6 +927,10 @@ void DevelopPanel::rowChanged(const QString& key, double v, bool final) {
         else if (k == "tint") m.tint = f;
         else if (k == "saturation") m.saturation = f;
         else if (k == "feather") m.feather = f;
+        else if (k == "texture") m.texture = f;
+        else if (k == "clarity") m.clarity = f;
+        else if (k == "dehaze") m.dehaze = f;
+        else if (k == "sharpness") m.sharpness = f;
     }
     else if (key == "skin.hue") p_.skinHue = f;
     else if (key == "skin.sat") p_.skinSat = f;

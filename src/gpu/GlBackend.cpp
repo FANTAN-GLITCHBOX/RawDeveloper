@@ -13,6 +13,7 @@
 
 #include "engine/Color.h"
 #include "engine/Pipeline.h"
+#include "engine/Effects.h"
 
 namespace rd {
 
@@ -90,7 +91,14 @@ uniform int hslOn, hasHue, hasSat, hasLum, skinOn;
 uniform int nMask, showSlot;
 uniform vec4 mapv;  // nx0, ny0, dx, dy
 uniform float asp;  // fullH / fullW
-const int MS = 20;
+const int MS = 24;
+// 質感の量（全体＋マスク）を画素ごとに書き出す
+uniform int effPlanes;
+uniform vec4 effGlobal;  // haze, clarity, texture, sharp
+layout(r32f, binding = 2) uniform writeonly image2D effHaze;
+layout(r32f, binding = 3) uniform writeonly image2D effClar;
+layout(r32f, binding = 4) uniform writeonly image2D effTex;
+layout(r32f, binding = 5) uniform writeonly image2D effSharp;
 
 float maskValue(int i, ivec2 px, vec3 disp) {
     int b = i * MS;
@@ -153,6 +161,18 @@ void main() {
         }
         xin *= lg;
         if (showSlot >= 0) showv[px.y * size.x + px.x] = mv[showSlot];
+    }
+    if (effPlanes != 0) {
+        vec4 e = effGlobal;
+        for (int i = 0; i < nMask; ++i) {
+            int b = i * MS;
+            if (mk[b + 2] < 0.5 || mv[i] <= 0.0) continue;
+            e += vec4(mk[b + 20], mk[b + 18], mk[b + 19], mk[b + 17]) * mv[i];
+        }
+        imageStore(effHaze, px, vec4(e.x));
+        imageStore(effClar, px, vec4(e.y));
+        imageStore(effTex, px, vec4(e.z));
+        imageStore(effSharp, px, vec4(e.w));
     }
     vec3 v;
     for (int c = 0; c < 3; ++c) {
@@ -304,27 +324,143 @@ void main() {
 }
 )";
 
-// シャープ（アンシャープマスク＋エッジだけに効かせるマスク）
-const char* kSharpen = R"(
+// 質感：量は画素ごとの面（usePlane）か全体の値
+const char* kEffCommon = R"(
 layout(rgba32f, binding = 1) uniform image2D img;
-layout(r32f, binding = 2) uniform readonly image2D Yp;
-layout(r32f, binding = 3) uniform readonly image2D Bp;
+layout(r32f, binding = 2) uniform readonly image2D amtP;
 uniform ivec2 size;
-uniform float k, maskAmt;
+uniform int usePlane;
+uniform float gAmt;
+float amount(ivec2 px) { return usePlane != 0 ? imageLoad(amtP, px).r : gAmt; }
+)";
+
+// かすみ：暗い成分
+const char* kDark = R"(
+layout(rgba32f, binding = 1) uniform readonly image2D img;
+layout(r32f, binding = 2) uniform writeonly image2D outD;
+uniform ivec2 size;
+uniform float air;
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= size.x || px.y >= size.y) return;
+    vec3 c = imageLoad(img, px).rgb;
+    imageStore(outD, px, vec4(min(c.r, min(c.g, c.b)) / air));
+}
+)";
+
+const char* kHaze = R"(
+layout(r32f, binding = 3) uniform readonly image2D darkB;
+uniform float air;
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= size.x || px.y >= size.y) return;
+    float hz = amount(px) / 100.0;
+    if (hz == 0.0) return;
+    vec3 c = imageLoad(img, px).rgb;
+    float d = clamp(imageLoad(darkB, px).r, 0.0, 1.0);
+    if (hz > 0.0) {
+        float t = max(1.0 - 0.9 * hz * d, 0.15);
+        c = clamp((c - air) / t + air, 0.0, 1.0);
+    } else {
+        float k2 = -hz * 0.55 * (0.4 + 0.6 * (1.0 - d));
+        c = clamp(c * (1.0 - k2) + air * 0.9 * k2, 0.0, 1.0);
+    }
+    imageStore(img, px, vec4(c, 1.0));
+}
+)";
+
+const char* kClarity = R"(
+layout(r32f, binding = 3) uniform readonly image2D Yp;
+layout(r32f, binding = 4) uniform readonly image2D Bp;
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= size.x || px.y >= size.y) return;
+    float c0 = amount(px) / 100.0;
+    if (c0 == 0.0) return;
+    float Y = imageLoad(Yp, px).r;
+    float y = clamp(Y, 0.0, 1.0);
+    float wgt = 0.25 + 3.0 * y * (1.0 - y);
+    float d = (Y - imageLoad(Bp, px).r) * c0 * (c0 > 0.0 ? 1.1 : 0.9) * wgt;
+    imageStore(img, px, vec4(clamp(imageLoad(img, px).rgb + d, 0.0, 1.0), 1.0));
+}
+)";
+
+const char* kTexture = R"(
+layout(r32f, binding = 3) uniform readonly image2D B1;
+layout(r32f, binding = 4) uniform readonly image2D B2;
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= size.x || px.y >= size.y) return;
+    float t = amount(px) / 100.0;
+    if (t == 0.0) return;
+    float d = (imageLoad(B1, px).r - imageLoad(B2, px).r) * t * (t > 0.0 ? 1.5 : 1.0);
+    imageStore(img, px, vec4(clamp(imageLoad(img, px).rgb + d, 0.0, 1.0), 1.0));
+}
+)";
+
+// RGB を 3 枚の面に分ける
+const char* kSplit = R"(
+layout(rgba32f, binding = 1) uniform readonly image2D img;
+layout(r32f, binding = 2) uniform writeonly image2D R;
+layout(r32f, binding = 3) uniform writeonly image2D G;
+layout(r32f, binding = 4) uniform writeonly image2D B;
+uniform ivec2 size;
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= size.x || px.y >= size.y) return;
+    vec3 c = imageLoad(img, px).rgb;
+    imageStore(R, px, vec4(c.r));
+    imageStore(G, px, vec4(c.g));
+    imageStore(B, px, vec4(c.b));
+}
+)";
+
+const char* kBlurApply = R"(
+layout(r32f, binding = 3) uniform readonly image2D R1;
+layout(r32f, binding = 4) uniform readonly image2D G1;
+layout(r32f, binding = 5) uniform readonly image2D B1;
+layout(r32f, binding = 6) uniform readonly image2D R2;
+layout(r32f, binding = 7) uniform readonly image2D G2;
+layout(r32f, binding = 0) uniform readonly image2D B2;
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= size.x || px.y >= size.y) return;
+    float s = amount(px);
+    if (s >= 0.0) return;
+    float kk = clamp(-s / 100.0, 0.0, 1.0);
+    vec3 c = imageLoad(img, px).rgb;
+    vec3 c1 = vec3(imageLoad(R1, px).r, imageLoad(G1, px).r, imageLoad(B1, px).r);
+    vec3 c2 = vec3(imageLoad(R2, px).r, imageLoad(G2, px).r, imageLoad(B2, px).r);
+    vec3 v = kk < 0.5 ? c + (c1 - c) * (kk * 2.0) : c1 + (c2 - c1) * (kk * 2.0 - 1.0);
+    imageStore(img, px, vec4(v, 1.0));
+}
+)";
+
+// シャープ（アンシャープマスク＋エッジだけに効かせるマスク＋ハロー抑え）
+const char* kSharpen = R"(
+layout(r32f, binding = 3) uniform readonly image2D Yp;
+layout(r32f, binding = 4) uniform readonly image2D Bp;
+uniform float maskAmt, damp;
 float at(int x, int y) { return imageLoad(Bp, ivec2(clamp(x, 0, size.x - 1), clamp(y, 0, size.y - 1))).r; }
 void main() {
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
     if (px.x >= size.x || px.y >= size.y) return;
+    float s = amount(px);
+    if (s <= 0.0) return;
     int x = px.x, y = px.y;
-    float detail = imageLoad(Yp, px).r - imageLoad(Bp, px).r;
+    float det = imageLoad(Yp, px).r - imageLoad(Bp, px).r;
     if (maskAmt > 0.0) {
         float gx = (at(x + 1, y - 1) + 2.0 * at(x + 1, y) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2.0 * at(x - 1, y) + at(x - 1, y + 1));
         float gy = (at(x - 1, y + 1) + 2.0 * at(x, y + 1) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2.0 * at(x, y - 1) + at(x + 1, y - 1));
         float mag = sqrt(gx * gx + gy * gy);
         float thr = maskAmt * 0.25;
-        detail *= clamp((mag - thr * 0.5) / max(thr, 1e-4), 0.0, 1.0);
+        det *= clamp((mag - thr * 0.5) / max(thr, 1e-4), 0.0, 1.0);
     }
-    vec3 c = imageLoad(img, px).rgb + k * detail;
+    if (damp > 0.0) {
+        float q = det * damp;
+        det /= 1.0 + q * q;
+    }
+    vec3 c = imageLoad(img, px).rgb + s / 100.0 * 1.2 * det;
     imageStore(img, px, vec4(clamp(c, 0.0, 1.0), 1.0));
 }
 )";
@@ -350,9 +486,10 @@ struct GlBackend::Impl {
     QOpenGLFunctions_4_3_Core* gl = nullptr;
     std::mutex mu;  // 1 度に 1 つの仕事
     bool broken = false;
-    GLuint progMain = 0, progPrep = 0, progBlur = 0, progSkin = 0, progSharp = 0;
+    GLuint progMain = 0, progPrep = 0, progBlur = 0, progSkin = 0, progSharp = 0, progDark = 0, progHaze = 0, progClar = 0,
+           progTex = 0, progSplit = 0, progBlurApply = 0;
     GLuint texIn = 0, texOut = 0, texBrush = 0;
-    GLuint planes[8] = {};
+    GLuint planes[16] = {};  // 0-7：作業用、8-11：質感の量、12-15：作業用
     GLuint buf[6] = {};  // tab, hsl, skinTab, masks, show, kernel
     int w = 0, h = 0, brushLayers = 0;
 
@@ -361,8 +498,8 @@ struct GlBackend::Impl {
         QMetaObject::invokeMethod(worker, std::forward<F>(f), Qt::BlockingQueuedConnection);
     }
 
-    GLuint compile(const char* body, QString* err) {
-        const std::string src = std::string(kCommon) + body;
+    GLuint compile(const char* body, QString* err, const char* extra = "") {
+        const std::string src = std::string(kCommon) + extra + body;
         const GLuint sh = gl->glCreateShader(GL_COMPUTE_SHADER);
         const char* s = src.c_str();
         gl->glShaderSource(sh, 1, &s, nullptr);
@@ -482,11 +619,11 @@ struct GlBackend::Impl {
         setBuffer(1, hslT.data(), hslT.size() * 4);
         setBuffer(2, st.skinTab->data(), st.skinTab->size() * 4);
         // マスク
-        std::vector<float> mk(size_t(std::max(1, nMask)) * 20, 0.0f);
+        std::vector<float> mk(size_t(std::max(1, nMask)) * 24, 0.0f);
         int layers = 0;
         for (int i = 0; i < nMask; ++i) {
             const LocalMask& m = st.masks->mask(i);
-            float* q = &mk[size_t(i) * 20];
+            float* q = &mk[size_t(i) * 24];
             q[0] = m.type == "linear" ? 0 : m.type == "radial" ? 1 : m.type == "brush" ? 2 : m.type == "skin" ? 3 : 4;
             q[1] = m.invert;
             q[2] = m.enabled;
@@ -494,6 +631,7 @@ struct GlBackend::Impl {
             q[4] = m.x0; q[5] = m.y0; q[6] = m.x1; q[7] = m.y1; q[8] = m.angle; q[9] = m.feather;
             q[10] = m.exposure; q[11] = m.contrast; q[12] = m.highlights; q[13] = m.shadows;
             q[14] = m.temp; q[15] = m.tint; q[16] = m.saturation;
+            q[17] = m.sharpness; q[18] = m.clarity; q[19] = m.texture; q[20] = m.dehaze;
         }
         setBuffer(3, mk.data(), mk.size() * 4);
         // ブラシ（層ごとに）
@@ -539,6 +677,11 @@ struct GlBackend::Impl {
         ui("showSlot", show ? st.showSlot : -1);
         gl->glUniform4f(gl->glGetUniformLocation(progMain, "mapv"), float(st.map.nx0), float(st.map.ny0), float(st.map.dx), float(st.map.dy));
         uf("asp", float(st.map.fullH / st.map.fullW));
+        const EffectAmounts& eg = *st.effects;
+        const bool effPlanes = st.effSlots && !st.effSlots->empty();
+        ui("effPlanes", effPlanes);
+        gl->glUniform4f(gl->glGetUniformLocation(progMain, "effGlobal"), eg.gHaze, eg.gClarity, eg.gTexture, eg.gSharp);
+        for (int i = 0; i < 4; ++i) gl->glBindImageTexture(2 + i, planes[8 + i], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
         ui("inLin", 0);
         ui("brushTex", 7);
         gl->glActiveTexture(GL_TEXTURE0);
@@ -579,26 +722,105 @@ struct GlBackend::Impl {
             for (int i = 0; i < 6; ++i) gl->glBindImageTexture(2 + i, ins[i], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
             dispatch();
         }
-        // ---- シャープ
-        if (st.detail) {
-            GLuint Yp = planes[0], Bp = planes[1], tmp = planes[3];
-            gl->glUseProgram(progPrep);
-            gl->glUniform2i(gl->glGetUniformLocation(progPrep, "size"), w, h);
-            gl->glUniform1i(gl->glGetUniformLocation(progPrep, "withMask"), 0);
-            gl->glBindImageTexture(1, texOut, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
-            gl->glBindImageTexture(2, Yp, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
-            gl->glBindImageTexture(3, planes[6], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
-            gl->glBindImageTexture(4, planes[7], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
-            dispatch();
-            blur(Yp, Bp, tmp, p.sharpenRadius * st.scale);
-            gl->glUseProgram(progSharp);
-            gl->glUniform2i(gl->glGetUniformLocation(progSharp, "size"), w, h);
-            gl->glUniform1f(gl->glGetUniformLocation(progSharp, "k"), p.sharpenAmount / 100.0f * 1.2f);
-            gl->glUniform1f(gl->glGetUniformLocation(progSharp, "maskAmt"), p.sharpenMasking / 100.0f);
-            gl->glBindImageTexture(1, texOut, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            gl->glBindImageTexture(2, Yp, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
-            gl->glBindImageTexture(3, Bp, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
-            dispatch();
+        // ---- 質感（CPU 版 applyEffects と同じ順番）
+        {
+            const EffectAmounts& eg = *st.effects;
+            const bool effPlanes = st.effSlots && !st.effSlots->empty();
+            // どの処理が要るか（全体の値か、どれかのマスク）
+            bool needH = eg.gHaze != 0, needC = eg.gClarity != 0, needT = eg.gTexture != 0, needBlur = false, needS = eg.gSharp > 0;
+            if (effPlanes)
+                for (int si : *st.effSlots) {
+                    const LocalMask& m = st.masks->mask(si);
+                    needH = needH || m.dehaze != 0;
+                    needC = needC || m.clarity != 0;
+                    needT = needT || m.texture != 0;
+                    needBlur = needBlur || m.sharpness < 0;
+                    needS = needS || m.sharpness > 0;
+                }
+            const EffectSigmas S = effectSigmas(st.longEdge);
+            const float sc = st.scale;
+            auto useEff = [&](GLuint prog, int plane, float g) {
+                gl->glUseProgram(prog);
+                gl->glUniform2i(gl->glGetUniformLocation(prog, "size"), w, h);
+                gl->glUniform1i(gl->glGetUniformLocation(prog, "usePlane"), effPlanes);
+                gl->glUniform1f(gl->glGetUniformLocation(prog, "gAmt"), g);
+                gl->glBindImageTexture(1, texOut, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+                gl->glBindImageTexture(2, planes[8 + plane], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+            };
+            auto lumTo = [&](GLuint dst) {
+                gl->glUseProgram(progPrep);
+                gl->glUniform2i(gl->glGetUniformLocation(progPrep, "size"), w, h);
+                gl->glUniform1i(gl->glGetUniformLocation(progPrep, "withMask"), 0);
+                gl->glBindImageTexture(1, texOut, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+                gl->glBindImageTexture(2, dst, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+                gl->glBindImageTexture(3, planes[14], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+                gl->glBindImageTexture(4, planes[15], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+                dispatch();
+            };
+            const GLuint tmp = planes[3];
+            if (needH) {
+                gl->glUseProgram(progDark);
+                gl->glUniform2i(gl->glGetUniformLocation(progDark, "size"), w, h);
+                gl->glUniform1f(gl->glGetUniformLocation(progDark, "air"), kHazeAir);
+                gl->glBindImageTexture(1, texOut, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+                gl->glBindImageTexture(2, planes[0], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+                dispatch();
+                blur(planes[0], planes[1], tmp, std::max(0.5f, S.haze * sc));
+                useEff(progHaze, 0, eg.gHaze);
+                gl->glUniform1f(gl->glGetUniformLocation(progHaze, "air"), kHazeAir);
+                gl->glBindImageTexture(3, planes[1], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+                dispatch();
+            }
+            if (needC) {
+                lumTo(planes[0]);
+                blur(planes[0], planes[1], tmp, std::max(0.5f, S.clarity * sc));
+                useEff(progClar, 1, eg.gClarity);
+                gl->glBindImageTexture(3, planes[0], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+                gl->glBindImageTexture(4, planes[1], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+                dispatch();
+            }
+            if (needT) {
+                lumTo(planes[0]);
+                blur(planes[0], planes[1], tmp, std::max(0.3f, S.tex1 * sc));
+                blur(planes[0], planes[2], tmp, std::max(0.6f, S.tex2 * sc));
+                useEff(progTex, 2, eg.gTexture);
+                gl->glBindImageTexture(3, planes[1], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+                gl->glBindImageTexture(4, planes[2], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+                dispatch();
+            }
+            if (needBlur) {
+                gl->glUseProgram(progSplit);
+                gl->glUniform2i(gl->glGetUniformLocation(progSplit, "size"), w, h);
+                gl->glBindImageTexture(1, texOut, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+                gl->glBindImageTexture(2, planes[12], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+                gl->glBindImageTexture(3, planes[13], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+                gl->glBindImageTexture(4, planes[14], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+                dispatch();
+                const float s1 = std::max(0.5f, S.blur1 * sc), s2 = std::max(0.5f, S.blur2 * sc);
+                blur(planes[12], planes[0], tmp, s1);
+                blur(planes[13], planes[1], tmp, s1);
+                blur(planes[14], planes[2], tmp, s1);
+                blur(planes[12], planes[4], tmp, s2);
+                blur(planes[13], planes[5], tmp, s2);
+                blur(planes[14], planes[6], tmp, s2);
+                useEff(progBlurApply, 3, eg.gSharp);
+                const GLuint ins[6] = {planes[0], planes[1], planes[2], planes[4], planes[5], planes[6]};
+                const int units[6] = {3, 4, 5, 6, 7, 0};
+                for (int i = 0; i < 6; ++i) gl->glBindImageTexture(units[i], ins[i], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+                dispatch();
+            }
+            const float rad = p.sharpenRadius * sc;
+            if (st.detail && rad >= 0.3f && needS) {
+                lumTo(planes[0]);
+                blur(planes[0], planes[1], tmp, rad);
+                useEff(progSharp, 3, eg.gSharp);
+                gl->glUniform1f(gl->glGetUniformLocation(progSharp, "maskAmt"), p.sharpenMasking / 100.0f);
+                gl->glUniform1f(gl->glGetUniformLocation(progSharp, "damp"),
+                                (1.0f - std::clamp(p.sharpenDetail, 0.0f, 100.0f) / 100.0f) * 20.0f);
+                gl->glBindImageTexture(3, planes[0], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+                gl->glBindImageTexture(4, planes[1], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+                dispatch();
+            }
         }
         // ---- 結果を受け取る
         out.resize(w, h);
@@ -670,8 +892,14 @@ GlBackend* GlBackend::create(bool allowSoftware, QString* why) {
         if (d.progMain) d.progPrep = d.compile(kPrep, &e);
         if (d.progPrep) d.progBlur = d.compile(kBlur, &e);
         if (d.progBlur) d.progSkin = d.compile(kSkinCombine, &e);
-        if (d.progSkin) d.progSharp = d.compile(kSharpen, &e);
-        if (!d.progSharp) {
+        if (d.progSkin) d.progSharp = d.compile(kSharpen, &e, kEffCommon);
+        if (d.progSharp) d.progDark = d.compile(kDark, &e);
+        if (d.progDark) d.progHaze = d.compile(kHaze, &e, kEffCommon);
+        if (d.progHaze) d.progClar = d.compile(kClarity, &e, kEffCommon);
+        if (d.progClar) d.progTex = d.compile(kTexture, &e, kEffCommon);
+        if (d.progTex) d.progSplit = d.compile(kSplit, &e);
+        if (d.progSplit) d.progBlurApply = d.compile(kBlurApply, &e, kEffCommon);
+        if (!d.progBlurApply) {
             err = QStringLiteral("シェーダーを作れませんでした：") + e.left(400);
             return;
         }

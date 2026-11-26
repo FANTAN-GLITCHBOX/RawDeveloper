@@ -63,6 +63,7 @@ add_library(rdengine STATIC
     src/engine/Skin.h src/engine/Skin.cpp
     src/engine/Profile.h src/engine/Profile.cpp
     src/engine/Local.h src/engine/Local.cpp
+    src/engine/Effects.h src/engine/Effects.cpp
     src/engine/Gpu.h
   src/engine/Auto.h src/engine/Auto.cpp
   src/engine/Lens.h src/engine/Lens.cpp

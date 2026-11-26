@@ -34,6 +34,7 @@ struct Params {
     std::array<float, 9> camMatrix{1, 0, 0, 0, 1, 0, 0, 0, 1};
     bool cameraLook() const { return profile == "camera"; }
     // トーン
+    float texture = 0, clarity = 0, dehaze = 0;  // 質感（基本補正）
     float exposure = 0, contrast = 0, highlights = 0, shadows = 0, whites = 0, blacks = 0;
     float saturation = 0, vibrance = 0;
     // カーブ（Y, R, G, B）
@@ -44,7 +45,7 @@ struct Params {
     // カラーホイール
     Wheel lift{}, gamma{}, gain{}, offset{};
     // ディテール
-    float sharpenAmount = 40, sharpenRadius = 1.0f, sharpenMasking = 0;
+    float sharpenAmount = 40, sharpenRadius = 1.0f, sharpenMasking = 0, sharpenDetail = 25;
     float nrLuma = 0, nrColor = 25;
     float nrLumaDetail = 50, nrLumaContrast = 0;   // 輝度：ディテール・コントラスト
     float nrColorDetail = 50, nrColorSmooth = 50;  // カラー：ディテール・滑らかさ

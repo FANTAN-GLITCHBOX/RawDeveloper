@@ -24,7 +24,8 @@ namespace rd {
 
 namespace {
 QJsonObject builtin(const QString& name) {
-    if (name == QStringLiteral("SNS 用（長辺 2048px・JPEG）")) return {{"fmt", "jpeg"}, {"quality", 88}, {"long_edge", 2048}};
+    if (name == QStringLiteral("SNS 用（長辺 2048px・JPEG）"))
+        return {{"fmt", "jpeg"}, {"quality", 88}, {"long_edge", 2048}, {"sharpen", "screen"}, {"sharpen_level", 2}};
     if (name == QStringLiteral("印刷用（TIFF 16bit・元サイズ）")) return {{"fmt", "tiff"}, {"quality", 100}, {"long_edge", 0}};
     if (name == QStringLiteral("納品用（JPEG 最高画質・元サイズ）")) return {{"fmt", "jpeg"}, {"quality", 97}, {"long_edge", 0}};
     return {};
@@ -94,6 +95,20 @@ ExportDialog::ExportDialog(int nSelected, int nFiltered, QWidget* parent) : QDia
     f2->addRow(QStringLiteral("画質（JPEG）"), quality_);
     f2->addRow(QStringLiteral("長辺のピクセル数"), longEdge_);
     f2->addRow(QStringLiteral("色空間"), space);
+    auto* sh = new QHBoxLayout;
+    sharpen_ = new QComboBox;
+    sharpen_->addItem(QStringLiteral("なし"), "none");
+    sharpen_->addItem(QStringLiteral("画面用（SNS・Web）"), "screen");
+    sharpen_->addItem(QStringLiteral("印刷用（光沢紙）"), "glossy");
+    sharpen_->addItem(QStringLiteral("印刷用（マット紙）"), "matte");
+    sharpenLevel_ = new QComboBox;
+    sharpenLevel_->addItem(QStringLiteral("弱"), 1);
+    sharpenLevel_->addItem(QStringLiteral("標準"), 2);
+    sharpenLevel_->addItem(QStringLiteral("強"), 3);
+    sh->addWidget(sharpen_, 1);
+    sh->addWidget(sharpenLevel_);
+    f2->addRow(QStringLiteral("書き出し時のシャープ"), sh);
+    connect(sharpen_, &QComboBox::currentIndexChanged, this, [this] { sharpenLevel_->setEnabled(sharpen_->currentData() != "none"); });
     v->addWidget(g2);
 
     auto* g3 = new QGroupBox(QStringLiteral("保存先とファイル名"));
@@ -176,6 +191,9 @@ void ExportDialog::load(const ExportOptions& o) {
     suffix_->setText(o.suffix);
     overwrite_->setCurrentIndex(std::max(0, overwrite_->findData(o.overwrite)));
     embed_->setChecked(o.embedRating);
+    sharpen_->setCurrentIndex(std::max(0, sharpen_->findData(o.sharpen)));
+    sharpenLevel_->setCurrentIndex(std::max(0, sharpenLevel_->findData(o.sharpenLevel)));
+    sharpenLevel_->setEnabled(o.sharpen != "none");
     addLib_->setChecked(o.addToLibrary);
 }
 
@@ -192,6 +210,8 @@ ExportOptions ExportDialog::options() const {
     o.embedRating = embed_->isChecked();
     o.overwrite = overwrite_->currentData().toString();
     o.addToLibrary = addLib_->isChecked();
+    o.sharpen = sharpen_->currentData().toString();
+    o.sharpenLevel = sharpenLevel_->currentData().toInt();
     return o;
 }
 

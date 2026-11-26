@@ -1,6 +1,7 @@
 #include "engine/Pipeline.h"
 #include "engine/Skin.h"
 #include "engine/Gpu.h"
+#include "engine/Effects.h"
 #include <atomic>
 
 #include <QJsonDocument>
@@ -195,46 +196,6 @@ void gaussianBlur(std::vector<float>& plane, int w, int h, float sigma) {
 }
 
 namespace {
-
-void applyDetail(ImageF& g, const Params& p, float scale) {
-    const int w = g.width, h = g.height;
-    const size_t n = static_cast<size_t>(w) * h;
-    const float rad = p.sharpenRadius * scale;
-    if (p.sharpenAmount > 0 && rad >= 0.3f) {
-        std::vector<float> Y(n);
-        for (size_t i = 0; i < n; ++i)
-            Y[i] = g.data[i * 3] * kLuma[0] + g.data[i * 3 + 1] * kLuma[1] + g.data[i * 3 + 2] * kLuma[2];
-        std::vector<float> blur = Y;
-        gaussianBlur(blur, w, h, rad);
-        const float k = p.sharpenAmount / 100.0f * 1.2f;
-        const float maskAmt = p.sharpenMasking / 100.0f;
-        parallelFor(h, [&](int a, int b) {
-            for (int y = a; y < b; ++y)
-                for (int x = 0; x < w; ++x) {
-                    const size_t i = static_cast<size_t>(y) * w + x;
-                    float detail = Y[i] - blur[i];
-                    if (maskAmt > 0) {
-                        auto at = [&](int xx, int yy) {
-                            xx = std::clamp(xx, 0, w - 1);
-                            yy = std::clamp(yy, 0, h - 1);
-                            return blur[static_cast<size_t>(yy) * w + xx];
-                        };
-                        const float gx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1)) -
-                                         (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1));
-                        const float gy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1)) -
-                                         (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1));
-                        const float mag = std::sqrt(gx * gx + gy * gy);
-                        const float thr = maskAmt * 0.25f;
-                        detail *= std::clamp((mag - thr * 0.5f) / std::max(thr, 1e-4f), 0.0f, 1.0f);
-                    }
-                    const float add = k * detail;
-                    g.data[i * 3] += add;
-                    g.data[i * 3 + 1] += add;
-                    g.data[i * 3 + 2] += add;
-                }
-        });
-    }
-}
 
 ImageF rotate(const ImageF& src, float angleDeg) {
     if (std::abs(angleDeg) < 1e-3f) return src;
@@ -513,6 +474,18 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
     const int nMask = masks ? masks->count() : 0;
     const int showSlot = masks && p.showMaskIndex >= 0 ? masks->slotOf(p.showMaskIndex) : -1;
     std::vector<float> showVals(showSlot >= 0 ? size_t(w) * h : 0);
+    // 質感（全体＋マスクごと）
+    EffectAmounts eff = globalEffects(p, o.detail);
+    std::vector<int> effSlots;  // 質感のあるマスク
+    if (masks)
+        for (int i = 0; i < masks->count(); ++i)
+            if (maskHasEffects(masks->mask(i))) effSlots.push_back(i);
+    if (!effSlots.empty()) {
+        eff.haze.assign(size_t(w) * h, eff.gHaze);
+        eff.clarity.assign(size_t(w) * h, eff.gClarity);
+        eff.texture.assign(size_t(w) * h, eff.gTexture);
+        eff.sharp.assign(size_t(w) * h, eff.gSharp);
+    }
 
     // GPU があれば、ここから肌の空間処理・シャープまでをまとめて GPU で
     bool gpuDone = false;
@@ -540,7 +513,10 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
         st.showSlot = showSlot;
         st.showVals = &showVals;
         st.skinSpatial = o.detail && p.enabled.skin && (p.skinUniLum > 0 || p.skinSmooth > 0);
-        st.detail = o.detail && p.enabled.detail && p.sharpenAmount > 0 && p.sharpenRadius * o.scale >= 0.3f;
+        st.detail = o.detail;
+        st.effects = &eff;
+        st.effSlots = &effSlots;
+        st.longEdge = std::max(map.fullW, map.fullH);
         st.scale = o.scale;
         gpuDone = gpuBackend()->runMain(st, g);
     }
@@ -562,6 +538,15 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
                 localLinearGains(*masks, mv, lg);
                 for (int c = 0; c < 3; ++c) xin[c] *= lg[c];
                 if (showSlot >= 0) showVals[i] = mv[showSlot];
+                for (int si : effSlots) {
+                    const LocalMask& lm = masks->mask(si);
+                    const float a = mv[si];
+                    if (a <= 0) continue;
+                    eff.haze[i] += lm.dehaze * a;
+                    eff.clarity[i] += lm.clarity * a;
+                    eff.texture[i] += lm.texture * a;
+                    eff.sharp[i] += lm.sharpness * a;
+                }
             }
             for (int c = 0; c < 3; ++c) {
                 const float x = std::max(xin[c], 0.0f);
@@ -605,10 +590,7 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
     });
     if (o.detail) skinLumaUniformity(g, p, o.scale);
 
-    if (o.detail && p.enabled.detail) {
-        applyDetail(g, p, o.scale);
-        for (float& x : g.data) x = std::clamp(x, 0.0f, 1.0f);
-    }
+    if (eff.any()) applyEffects(g, p, eff, o.scale, std::max(map.fullW, map.fullH), o.detail);
     }  // !gpuDone
     if (p.skinMaskView) skinMaskOverlay(g, p);
     if (showSlot >= 0) {
@@ -663,6 +645,7 @@ ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<floa
     }
     {
         rad = std::max(rad, float(skinMargin(pIn)));
+        rad = std::max(rad, float(effectsMargin(pIn, std::max(W, H))));
         if (pIn.enabled.local) rad = std::max(rad, float(spotMargin(pIn, W)));
     }
     const int m = static_cast<int>(std::ceil(rad));

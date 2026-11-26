@@ -29,7 +29,8 @@ QJsonArray masksToJson(const std::vector<LocalMask>& ms) {
                       {"x1", m.x1},             {"y1", m.y1},               {"angle", m.angle},
                       {"feather", m.feather},   {"exposure", m.exposure},   {"contrast", m.contrast},
                       {"highlights", m.highlights}, {"shadows", m.shadows}, {"temp", m.temp},
-                      {"tint", m.tint},         {"saturation", m.saturation}};
+                      {"tint", m.tint},         {"saturation", m.saturation}, {"sharpness", m.sharpness},
+                      {"clarity", m.clarity},   {"texture", m.texture},     {"dehaze", m.dehaze}};
         if (!m.dabs.empty()) {
             QJsonArray d;
             for (const auto& b : m.dabs) d.append(QJsonArray{b.x, b.y, b.r, b.flow, b.erase ? 1 : 0});
@@ -62,6 +63,10 @@ std::vector<LocalMask> masksFromJson(const QJsonArray& a) {
         m.temp = num(o, "temp", 0);
         m.tint = num(o, "tint", 0);
         m.saturation = num(o, "saturation", 0);
+        m.sharpness = num(o, "sharpness", 0);
+        m.clarity = num(o, "clarity", 0);
+        m.texture = num(o, "texture", 0);
+        m.dehaze = num(o, "dehaze", 0);
         for (const auto& d : o.value("dabs").toArray()) {
             const QJsonArray q = d.toArray();
             if (q.size() >= 4) m.dabs.push_back({float(q[0].toDouble()), float(q[1].toDouble()), float(q[2].toDouble()),

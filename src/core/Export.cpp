@@ -1,4 +1,5 @@
 #include "core/Export.h"
+#include "engine/Effects.h"
 
 #include <tiffio.h>
 
@@ -23,7 +24,8 @@ QJsonObject ExportOptions::toJson() const {
     return QJsonObject{{"folder", folder},       {"same_folder", sameFolder}, {"subfolder", subfolder},
                        {"fmt", fmt},             {"quality", quality},        {"long_edge", longEdge},
                        {"name_template", nameTemplate}, {"suffix", suffix},  {"embed_rating", embedRating},
-                       {"overwrite", overwrite}, {"add_to_library", addToLibrary}};
+                       {"overwrite", overwrite}, {"add_to_library", addToLibrary}, {"sharpen", sharpen},
+                       {"sharpen_level", sharpenLevel}};
 }
 
 ExportOptions ExportOptions::fromJson(const QJsonObject& o) {
@@ -34,6 +36,8 @@ ExportOptions ExportOptions::fromJson(const QJsonObject& o) {
     e.fmt = o.value("fmt").toString("jpeg");
     e.quality = o.value("quality").toInt(92);
     e.longEdge = o.value("long_edge").toInt(0);
+    e.sharpen = o.value("sharpen").toString("none");
+    e.sharpenLevel = o.value("sharpen_level").toInt(2);
     e.nameTemplate = o.value("name_template").toString("{name}");
     e.suffix = o.value("suffix").toString();
     e.embedRating = o.value("embed_rating").toBool(true);
@@ -176,6 +180,10 @@ QString writeExport(const ImageF& gIn, const QString& path, const ExportOptions&
     const ImageF& g0 = gIn;
     ImageF scaled;
     if (o.longEdge > 0 && std::max(g0.width, g0.height) > o.longEdge) scaled = downscale(g0, o.longEdge);
+    if (o.sharpen != "none" && !o.sharpen.isEmpty()) {
+        if (scaled.empty()) scaled = g0;
+        outputSharpen(scaled, o.sharpen, o.sharpenLevel);  // 縮小したあとに（見る大きさに合わせて）
+    }
     const ImageF& g = scaled.empty() ? g0 : scaled;
     const std::optional<int> r = (o.embedRating && rating > 0) ? std::optional<int>(rating) : std::nullopt;
     const QString lb = o.embedRating ? label : QString();

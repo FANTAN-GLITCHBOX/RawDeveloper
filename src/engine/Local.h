@@ -30,6 +30,7 @@ struct LocalMask {
     std::vector<BrushDab> dabs;
     // 補正（-100..100、露出は -4..4）
     float exposure = 0, contrast = 0, highlights = 0, shadows = 0, temp = 0, tint = 0, saturation = 0;
+    float sharpness = 0, clarity = 0, texture = 0, dehaze = 0;  // 質感（シャープ −100 はぼかし）
     bool operator==(const LocalMask&) const = default;
 };
 

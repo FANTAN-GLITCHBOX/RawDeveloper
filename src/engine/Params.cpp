@@ -61,6 +61,9 @@ QJsonObject Params::toJson() const {
     o["profile"] = QJsonObject{{"name", profile}, {"exposure", camExposure}, {"matrix", toArr(camMatrix.data(), 9)}};
     o["exposure"] = exposure;
     o["contrast"] = contrast;
+    o["texture"] = texture;
+    o["clarity"] = clarity;
+    o["dehaze"] = dehaze;
     o["highlights"] = highlights;
     o["shadows"] = shadows;
     o["whites"] = whites;
@@ -79,7 +82,7 @@ QJsonObject Params::toJson() const {
                             {"center_hue", skinCenterHue}, {"center_sat", skinCenterSat}, {"range", skinRange}};
     if (!masks.empty()) o["masks"] = masksToJson(masks);
     if (!spots.empty()) o["spots"] = spotsToJson(spots);
-    o["sharpen"] = QJsonObject{{"amount", sharpenAmount}, {"radius", sharpenRadius}, {"masking", sharpenMasking}};
+    o["sharpen"] = QJsonObject{{"amount", sharpenAmount}, {"radius", sharpenRadius}, {"masking", sharpenMasking}, {"detail", sharpenDetail}};
     o["nr"] = QJsonObject{{"luma", nrLuma},           {"color", nrColor},
                           {"luma_detail", nrLumaDetail}, {"luma_contrast", nrLumaContrast},
                           {"color_detail", nrColorDetail}, {"color_smooth", nrColorSmooth}};
@@ -116,6 +119,9 @@ Params Params::fromJson(const QJsonObject& o) {
     }
     p.exposure = num(o, "exposure", 0);
     p.contrast = num(o, "contrast", 0);
+    p.texture = num(o, "texture", 0);
+    p.clarity = num(o, "clarity", 0);
+    p.dehaze = num(o, "dehaze", 0);
     p.highlights = num(o, "highlights", 0);
     p.shadows = num(o, "shadows", 0);
     p.whites = num(o, "whites", 0);
@@ -141,6 +147,7 @@ Params Params::fromJson(const QJsonObject& o) {
     p.sharpenAmount = num(s, "amount", 40);
     p.sharpenRadius = num(s, "radius", 1.0f);
     p.sharpenMasking = num(s, "masking", 0);
+    p.sharpenDetail = num(s, "detail", s.isEmpty() ? 25 : 100);  // 以前のファイル（ディテールなし）は以前と同じ効き方に
     p.masks = masksFromJson(o.value("masks").toArray());
     p.spots = spotsFromJson(o.value("spots").toArray());
     const QJsonObject sk = o.value("skin").toObject();
@@ -202,6 +209,7 @@ void resetPanel(Params& p, Panel panel) {
             p.temp = d.temp;
             p.tint = d.tint;
             p.exposure = p.contrast = p.highlights = p.shadows = p.whites = p.blacks = 0;
+            p.texture = p.clarity = p.dehaze = 0;
             p.saturation = p.vibrance = 0;
             break;
         case Panel::Wheels: p.lift = p.gamma = p.gain = p.offset = Wheel{}; break;
@@ -224,6 +232,7 @@ void resetPanel(Params& p, Panel panel) {
             p.sharpenAmount = d.sharpenAmount;
             p.sharpenRadius = d.sharpenRadius;
             p.sharpenMasking = d.sharpenMasking;
+            p.sharpenDetail = d.sharpenDetail;
             p.nrLuma = d.nrLuma;
             p.nrColor = d.nrColor;
             p.nrLumaDetail = d.nrLumaDetail;

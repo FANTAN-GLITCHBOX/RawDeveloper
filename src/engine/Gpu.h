@@ -28,7 +28,10 @@ struct MainStage {
     int showSlot = -1;
     std::vector<float>* showVals = nullptr;  // 範囲表示用に返す
     bool skinSpatial = false;     // 肌の均一化（明るさ）・なめらかさ
-    bool detail = false;          // シャープ
+    bool detail = false;          // シャープなど細かい処理をするか（プレビューのドラッグ中は false）
+    const struct EffectAmounts* effects = nullptr;  // 質感（全体の値。画素ごとの値はマスクから GPU で作る）
+    const std::vector<int>* effSlots = nullptr;     // 質感のあるマスクの番号
+    double longEdge = 1;
     float scale = 1;
 };
 
