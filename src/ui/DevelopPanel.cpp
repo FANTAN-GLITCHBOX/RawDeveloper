@@ -325,6 +325,22 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
             p_.masks[r].enabled = it->checkState() == Qt::Checked;
             emitChange(true, p_.masks[r].enabled ? QStringLiteral("マスクをオン") : QStringLiteral("マスクをオフ"));
         });
+        maskList_->setToolTip(QStringLiteral("チェックを外すと、そのマスクを一時的にオフ（消えません）"));
+        {
+            auto* sw = new QWidget;
+            auto* sl = new QHBoxLayout(sw);
+            sl->setContentsMargins(8, 0, 8, 0);
+            spotsOn_ = new QCheckBox;
+            spotsOn_->setToolTip(QStringLiteral("外すと補修前の状態を表示（スポットは消えません）"));
+            sl->addWidget(spotsOn_);
+            sl->addStretch();
+            local->add(sw);
+            connect(spotsOn_, &QCheckBox::toggled, this, [this](bool on) {
+                if (updating_) return;
+                p_.spotsOn = on;
+                emitChange(true, on ? QStringLiteral("スポット修復をオン") : QStringLiteral("スポット修復をオフ"));
+            });
+        }
         auto* ops = new QWidget;
         auto* oh = new QHBoxLayout(ops);
         oh->setContentsMargins(8, 0, 8, 0);
@@ -413,6 +429,7 @@ DevelopPanel::DevelopPanel(QWidget* parent) : QWidget(parent) {
         connect(clear, &QPushButton::clicked, this, [this] {
             if (p_.spots.empty()) return;
             p_.spots.clear();
+            refreshMaskList();
             emitChange(true, QStringLiteral("スポット修復をすべて削除"));
         });
         sh->addWidget(clear);
@@ -829,6 +846,9 @@ void DevelopPanel::refreshMaskList() {
         maskList_->addItem(it);
     }
     if (selMask_ >= 0 && selMask_ < maskList_->count()) maskList_->setCurrentRow(selMask_);
+    spotsOn_->setText(QStringLiteral("スポット修復を使う（%1 か所）").arg(p_.spots.size()));
+    spotsOn_->setChecked(p_.spotsOn);
+    spotsOn_->parentWidget()->setVisible(!p_.spots.empty());
     updating_ = old;
     updateMaskRows();
 }

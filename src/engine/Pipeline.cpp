@@ -403,7 +403,7 @@ ImageF develop(const ImageF& linIn, const Params& p, const std::array<float, 3>&
     }
     // スポット修復（トーン調整の前、リニアで）
     ImageF spotted;
-    if (p.enabled.local && !p.spots.empty()) {
+    if (p.enabled.local && p.spotsOn && !p.spots.empty()) {
         spotted = *linp;
         applySpots(spotted, p, map, o.fetch);
         linp = &spotted;
@@ -681,7 +681,7 @@ ImageF developRegion(const ImageF& lin, const Params& pIn, const std::array<floa
     o.map.dy = 1.0 / (k * H);
     o.map.fullW = W;
     o.map.fullH = H;
-    if (pIn.enabled.local && !pIn.spots.empty()) {
+    if (pIn.enabled.local && pIn.spotsOn && !pIn.spots.empty()) {
         const bool lensOn = lensActive(pIn, lens) || (pIn.enabled.lens && (std::abs(pIn.lensManualDistortion) > 0.5f ||
                                                                            std::abs(pIn.lensManualVignetting) > 0.5f));
         const Params pl = pIn;

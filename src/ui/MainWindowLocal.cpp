@@ -129,6 +129,10 @@ void MainWindow::drawLocalOverlay(QPainter& p, const QRectF& r) {
     auto toDispFn = [this](QPointF i) { return imgToDisp(i); };
     const QColor acc(0xd2, 0x8b, 0x2c);
     const int sel = panel_->selectedMask();
+    // 印の表示：0 常に 1 マウスが写真の上にあるとき 2 選んだものだけ 3 表示しない（H で一時的に隠す）
+    const int mode = overlayHidden_ ? 3 : overlayMode_;
+    const bool hoverOk = mode != 1 || viewer_->underMouse();
+    auto visible = [&](bool selected) { return mode != 3 && hoverOk && (mode != 2 || selected); };
     auto pin = [&](QPointF w, bool on) {
         p.setPen(QPen(Qt::black, 1));
         p.setBrush(on ? acc : QColor(240, 240, 240));
@@ -140,6 +144,7 @@ void MainWindow::drawLocalOverlay(QPainter& p, const QRectF& r) {
             const LocalMask& m = P.masks[i];
             if (m.type != "linear" && m.type != "radial") continue;
             const bool on = i == sel;
+            if (!visible(on)) continue;
             if (m.type == "linear") {
                 const QPointF a(m.x0, m.y0), b(m.x1, m.y1);
                 if (on) {
@@ -187,6 +192,7 @@ void MainWindow::drawLocalOverlay(QPainter& p, const QRectF& r) {
         for (int i = 0; i < int(P.spots.size()); ++i) {
             const Spot& s = P.spots[i];
             const bool on = i == selSpot_;
+            if (!visible(on)) continue;
             p.setBrush(Qt::NoBrush);
             p.setPen(QPen(on ? acc : QColor(255, 255, 255, 200), on ? 2.0 : 1.3));
             p.drawPolyline(imgCircle(toDispFn, r, QPointF(s.x, s.y), s.r, s.r * asp));
@@ -310,6 +316,7 @@ void MainWindow::localPress(QPointF n, Qt::KeyboardModifiers mods) {
         s.clone = panel_->spotClone();
         if (s_->preview) autoSpotSource(*s_->preview, s);
         P.spots.push_back(s);
+        P.spotsOn = true;
         P.enabled.local = true;
         selSpot_ = int(P.spots.size()) - 1;
         ldrag_ = LDrag::None;

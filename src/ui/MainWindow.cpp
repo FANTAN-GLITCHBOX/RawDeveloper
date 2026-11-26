@@ -628,6 +628,35 @@ void MainWindow::buildActions() {
     QAction* clip = add(view, QStringLiteral("白飛び・黒つぶれ警告"), QKeySequence("J"), [] {}, true);
     clip->setCheckable(true);
     connect(clip, &QAction::toggled, viewer_, &Viewer::setClipOverlay);
+    // 部分補正・スポット修復の印（円・ピン・線）
+    {
+        QMenu* om = view->addMenu(QStringLiteral("補正の印（円・ピン）の表示"));
+        auto* og = new QActionGroup(this);
+        overlayMode_ = std::clamp(QSettings().value("view/overlay_mode", 1).toInt(), 0, 3);
+        const char* names[] = {"常に表示", "マウスが写真の上にあるときだけ", "選んだものだけ", "表示しない"};
+        for (int i = 0; i < 4; ++i) {
+            QAction* a = om->addAction(QString::fromUtf8(names[i]));
+            a->setCheckable(true);
+            a->setChecked(i == overlayMode_);
+            og->addAction(a);
+            connect(a, &QAction::triggered, this, [this, i] {
+                overlayMode_ = i;
+                overlayHidden_ = false;
+                QSettings().setValue("view/overlay_mode", i);
+                viewer_->update();
+            });
+        }
+        om->addSeparator();
+        QAction* hide = om->addAction(QStringLiteral("印を一時的に隠す／出す"));
+        hide->setShortcut(QKeySequence("H"));
+        connect(hide, &QAction::triggered, this, [this] {
+            overlayHidden_ = !overlayHidden_;
+            statusBar()->showMessage(overlayHidden_ ? QStringLiteral("補正の印を隠しました（H でもう一度表示）")
+                                                    : QStringLiteral("補正の印を表示"), 2000);
+            viewer_->update();
+        });
+        addAction(hide);
+    }
     add(view, QStringLiteral("全体表示"), QKeySequence(), [this] { viewer_->zoomFit(); }, true);
     add(view, QStringLiteral("100%"), QKeySequence(), [this] { viewer_->zoom100(); }, true);
     add(view, QStringLiteral("全体⇔等倍"), QKeySequence("Z"), [this] { viewer_->toggleZoom(); });
@@ -2038,6 +2067,7 @@ void MainWindow::runScriptedTest(const QString& prefix) {
     };
     if (qEnvironmentVariableIsSet("RD_TEST_LOCAL")) {
         QTimer::singleShot(5000, this, [this, prefix] {
+            overlayMode_ = 0;  // 画面外のテストでもマウスなしで印を出す
             panel_->setLocalTool(DevelopPanel::ToolLinear);
             localPress({0.5, 0.0}, {});
             localMove({0.5, 0.2}, true, {});
@@ -2085,7 +2115,16 @@ void MainWindow::runScriptedTest(const QString& prefix) {
                     viewer_->zoom100();
                     QTimer::singleShot(4000, this, [this, prefix] {
                         grab().save(prefix + "_local3.png");
-                        QApplication::quit();
+                        // 印は選んだものだけ・スポット修復オフ
+                        overlayMode_ = 2;
+                        for (auto* cb : panel_->findChildren<QCheckBox*>())
+                            if (cb->text().startsWith(QStringLiteral("スポット修復を使う"))) cb->setChecked(false);
+                        QTimer::singleShot(3000, this, [this, prefix] {
+                            std::printf("spots_on %d\n", int(s_->params.spotsOn));
+                            std::fflush(stdout);
+                            grab().save(prefix + "_local4.png");
+                            QApplication::quit();
+                        });
                     });
                 });
             });

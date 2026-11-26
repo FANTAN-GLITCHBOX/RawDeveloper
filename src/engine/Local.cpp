@@ -221,7 +221,7 @@ void localDisplayAdjust(const MaskSet& ms, const float* m, float v[3]) {
 int spotMargin(const Params& p, double fullW) {
     float r = 0;
     for (const auto& s : p.spots) r = std::max(r, s.r);
-    return p.spots.empty() ? 0 : int(r * fullW * 1.6) + 4;
+    return (p.spots.empty() || !p.spotsOn) ? 0 : int(r * fullW * 1.6) + 4;
 }
 
 namespace {
@@ -229,7 +229,7 @@ void blurPlane(std::vector<float>& a, int w, int h, float sigma) { gaussianBlur(
 }  // namespace
 
 void applySpots(ImageF& img, const Params& p, const PixelMap& map, const PatchFetch& fetch) {
-    if (!p.enabled.local || p.spots.empty()) return;
+    if (!p.enabled.local || !p.spotsOn || p.spots.empty()) return;
     const ImageF orig = fetch ? ImageF{} : img;  // 自分自身から取るときは、直す前の画像から
     for (const Spot& s : p.spots) {
         const double R = s.r / map.dx;

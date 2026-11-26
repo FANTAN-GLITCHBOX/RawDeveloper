@@ -82,6 +82,7 @@ QJsonObject Params::toJson() const {
                             {"center_hue", skinCenterHue}, {"center_sat", skinCenterSat}, {"range", skinRange}};
     if (!masks.empty()) o["masks"] = masksToJson(masks);
     if (!spots.empty()) o["spots"] = spotsToJson(spots);
+    if (!spotsOn) o["spots_on"] = false;
     o["sharpen"] = QJsonObject{{"amount", sharpenAmount}, {"radius", sharpenRadius}, {"masking", sharpenMasking}, {"detail", sharpenDetail}};
     o["nr"] = QJsonObject{{"luma", nrLuma},           {"color", nrColor},
                           {"luma_detail", nrLumaDetail}, {"luma_contrast", nrLumaContrast},
@@ -150,6 +151,7 @@ Params Params::fromJson(const QJsonObject& o) {
     p.sharpenDetail = num(s, "detail", s.isEmpty() ? 25 : 100);  // 以前のファイル（ディテールなし）は以前と同じ効き方に
     p.masks = masksFromJson(o.value("masks").toArray());
     p.spots = spotsFromJson(o.value("spots").toArray());
+    p.spotsOn = o.value("spots_on").toBool(true);
     const QJsonObject sk = o.value("skin").toObject();
     p.skinHue = num(sk, "hue", 0);
     p.skinSat = num(sk, "sat", 0);
@@ -218,6 +220,7 @@ void resetPanel(Params& p, Panel panel) {
         case Panel::Local:
             p.masks.clear();
             p.spots.clear();
+            p.spotsOn = true;
             break;
         case Panel::Skin:
             p.skinHue = p.skinSat = p.skinLum = 0;

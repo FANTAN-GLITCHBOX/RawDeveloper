@@ -106,6 +106,7 @@ private:
     QCheckBox* maskOverlay_ = nullptr;
     QCheckBox* brushErase_ = nullptr;
     QCheckBox* spotClone_ = nullptr;
+    QCheckBox* spotsOn_ = nullptr;
     ParamRow *brushSize_ = nullptr, *brushFlow_ = nullptr, *spotSize_ = nullptr;
     QWidget *maskRows_ = nullptr, *brushRows_ = nullptr;
     QMap<int, QToolButton*> toolButtons_;

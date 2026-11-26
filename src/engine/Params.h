@@ -58,6 +58,7 @@ struct Params {
     // 部分補正・スポット修復
     std::vector<LocalMask> masks;
     std::vector<Spot> spots;
+    bool spotsOn = true;     // スポット修復を使う（オフでも消さない）
     int showMaskIndex = -1;  // このマスクの範囲を赤く表示（保存しない、画面だけ）
     // レンズ補正
     bool lensProfile = true;      // プロファイル補正を使う

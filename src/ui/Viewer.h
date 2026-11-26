@@ -86,6 +86,7 @@ protected:
     void keyPressEvent(QKeyEvent*) override;
     void keyReleaseEvent(QKeyEvent*) override;
     void leaveEvent(QEvent*) override;
+    void enterEvent(QEnterEvent*) override;
     void resizeEvent(QResizeEvent*) override;
 
 private:

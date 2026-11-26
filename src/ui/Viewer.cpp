@@ -598,7 +598,11 @@ void Viewer::mouseReleaseEvent(QMouseEvent* e) {
     }
 }
 
-void Viewer::leaveEvent(QEvent*) { emit probe(std::nullopt); }
+void Viewer::leaveEvent(QEvent*) {
+    emit probe(std::nullopt);
+    update();  // 「マウスが写真の上にあるときだけ」の印を消す
+}
+void Viewer::enterEvent(QEnterEvent*) { update(); }
 
 void Viewer::dragCrop(const QPointF& pos, const QRectF& r) {
     const double dx = (pos.x() - cropP0_.x()) / r.width(), dy = (pos.y() - cropP0_.y()) / r.height();

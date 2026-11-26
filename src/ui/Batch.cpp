@@ -37,7 +37,7 @@ const std::vector<PasteGroup>& pasteGroups() {
         {"hsl", "HSL", {"hsl", "enabled.hsl"}},
         {"skin", "肌色", {"skin", "enabled.skin"}},
         {"local", "部分補正（マスク）", {"masks", "enabled.local"}},
-        {"spots", "スポット修復", {"spots"}},
+        {"spots", "スポット修復", {"spots", "spots_on"}},
         {"detail", "ディテール（シャープ・ノイズ低減）", {"sharpen", "nr", "enabled.detail"}},
         {"lens", "レンズ補正", {"lens", "enabled.lens"}},
         {"crop", "切り抜き・角度", {"crop", "enabled.crop"}},
@@ -68,7 +68,7 @@ const QStringList& allKeys() {
                                "whites", "blacks",         "saturation",     "vibrance",      "curve",
                                "hsl",    "wheels",         "sharpen",        "nr",            "lens",
                                "crop",   "enabled.basic",  "enabled.wheels", "enabled.curve", "enabled.hsl",
-                               "enabled.detail", "enabled.lens", "enabled.crop", "skin", "enabled.skin", "masks", "spots", "enabled.local"};
+                               "enabled.detail", "enabled.lens", "enabled.crop", "skin", "enabled.skin", "masks", "spots", "spots_on", "enabled.local"};
     return k;
 }
 }  // namespace

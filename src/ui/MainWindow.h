@@ -216,6 +216,8 @@ private:
     LocalMask ldragMask_;
     Spot ldragSpot_{};
     int selSpot_ = -1;
+    int overlayMode_ = 1;        // 印の表示：0 常に 1 マウスが写真の上 2 選んだものだけ 3 表示しない
+    bool overlayHidden_ = false; // H で一時的に隠す
     QPointF hoverN_{-1, -1};
     QPointF lastDab_{-10, -10};
     bool ldragMoved_ = false;
