@@ -812,6 +812,7 @@ void MainWindow::showLibInfo(const QString& path) {
     if (it->flag) stars += it->flag == 1 ? QStringLiteral("　採用") : QStringLiteral("　除外");
     *rows << dim.arg(QStringLiteral("評価"), stars);
     if (it->exports) *rows << dim.arg(QStringLiteral("書き出し"), QStringLiteral("%1 件").arg(it->exports));
+    if (!it->cropInfo.isEmpty()) *rows << dim.arg(QStringLiteral("✂"), it->cropInfo);
     if (it->isExport) {
         const QString src = Catalog::get().sourceOf(path);
         *rows << dim.arg(QStringLiteral("元の写真"), QFileInfo(src).fileName() + (it->missingLink ? QStringLiteral("（見つかりません）") : ""));
@@ -1231,6 +1232,11 @@ void MainWindow::saveSidecar() {
     }
     s_->sidecar = o;
     if (PhotoItem* it = model_->item(s_->path)) {
+        const QString ci = cropSummary(o.value("params").toObject());
+        if (ci != it->cropInfo) {
+            it->cropInfo = ci;
+            model_->refresh(s_->path);
+        }
         if (!it->edited) {
             it->edited = true;
             PhotoMark m{it->rating, it->label, it->flag, true};
@@ -1808,6 +1814,7 @@ void MainWindow::runBatch(std::vector<BatchJob> jobs, const QString& title, bool
             QMetaObject::invokeMethod(self, [this, self, d, n, prog] {
                 if (!self) return;
                 if (PhotoItem* it = model_->item(d.path)) {
+                    it->cropInfo = cropSummaryOf(d.path);
                     if (!it->edited && QFileInfo::exists(d.path + ".rdev")) {
                         it->edited = true;
                         Catalog::get().setMark(d.path, PhotoMark{it->rating, it->label, it->flag, true});

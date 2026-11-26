@@ -2,6 +2,7 @@
 // ライブラリ：サムネイル一覧、★・ラベル・フラグ表示、絞り込み・並べ替え、フィルムストリップ
 #include <QAbstractListModel>
 #include <QImage>
+#include <QJsonObject>
 #include <QListView>
 #include <QSet>
 #include <QSortFilterProxyModel>
@@ -24,6 +25,7 @@ struct PhotoItem {
     QString label;
     int flag = 0;
     bool edited = false;
+    QString cropInfo;  // 切り抜き・角度の説明（空なら切り抜いていない）
     int exports = 0;
     bool isExport = false;
     bool missingLink = false;
@@ -31,6 +33,10 @@ struct PhotoItem {
     qint64 mtime = 0;
     QImage thumb;
 };
+
+// 調整内容から「切り抜き（元の 78%）・角度 +1.3°」のような説明を作る。切り抜いていなければ空
+QString cropSummary(const QJsonObject& params);
+QString cropSummaryOf(const QString& photoPath);  // .rdev を読んで
 
 QString labelColor(const QString& label);
 QString labelName(const QString& label);
@@ -72,7 +78,7 @@ public:
     QString ratingOp = ">=";       // >= | == | <=
     QSet<QString> labels;          // 空なら全部（"none" = ラベルなし）
     QString flag = "all";          // all | pick | reject | unflagged | notreject
-    QString kind = "all";          // all | raw | image | edited | exported
+    QString kind = "all";          // all | raw | image | edited | exported | cropped | uncropped
     QString text;
     QString sortKey = "name";      // name | date | rating | label
     void refilter();

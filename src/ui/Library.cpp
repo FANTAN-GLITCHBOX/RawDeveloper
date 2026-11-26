@@ -1,5 +1,7 @@
 #include "ui/Library.h"
 
+#include <QJsonDocument>
+
 #include <QApplication>
 #include <QComboBox>
 #include <QCryptographicHash>
@@ -87,6 +89,7 @@ std::vector<PhotoItem> scanFolder(const QString& folder) {
             it.label = sm.mark.label;
             it.flag = sm.mark.flag;
             it.edited = sm.mark.edited;
+            if (it.edited) it.cropInfo = cropSummaryOf(p);
         } else if (auto m = cat.mark(p)) {
             it.rating = m->rating;
             it.label = m->label;
@@ -126,11 +129,37 @@ void PhotoModel::setItems(std::vector<PhotoItem> items) {
 
 int PhotoModel::rowCount(const QModelIndex& parent) const { return parent.isValid() ? 0 : int(items_.size()); }
 
+QString cropSummary(const QJsonObject& params) {
+    const QJsonObject en = params.value("enabled").toObject();
+    if (!en.value("crop").toBool(true)) return {};
+    const QJsonObject c = params.value("crop").toObject();
+    const double w = c.value("w").toDouble(1), h = c.value("h").toDouble(1), a = c.value("angle").toDouble(0);
+    const bool cut = w < 0.999 || h < 0.999, rot = std::abs(a) >= 0.01;
+    if (!cut && !rot) return {};
+    QStringList parts;
+    if (cut) {
+        QString t = QStringLiteral("切り抜き");
+        const QString asp = c.value("aspect").toVariant().toString();
+        if (asp.contains(':')) t += " " + asp;
+        t += QStringLiteral("（元の %1%）").arg(qRound(w * h * 100));
+        parts << t;
+    }
+    if (rot) parts << QStringLiteral("角度 %1%2°").arg(a > 0 ? "+" : "").arg(a, 0, 'f', 1);
+    return parts.join(QStringLiteral("・"));
+}
+
+QString cropSummaryOf(const QString& photoPath) {
+    QFile f(photoPath + ".rdev");
+    if (!f.open(QIODevice::ReadOnly)) return {};
+    return cropSummary(QJsonDocument::fromJson(f.readAll()).object().value("params").toObject());
+}
+
 QVariant PhotoModel::data(const QModelIndex& idx, int role) const {
     if (!idx.isValid() || idx.row() >= int(items_.size())) return {};
     const PhotoItem& it = items_[idx.row()];
     if (role == Qt::DisplayRole) return it.name;
-    if (role == Qt::ToolTipRole) return QDir::toNativeSeparators(it.path);
+    if (role == Qt::ToolTipRole)
+        return QDir::toNativeSeparators(it.path) + (it.cropInfo.isEmpty() ? QString() : QStringLiteral("\n✂ ") + it.cropInfo);
     if (role == ItemRole) {
         if (it.thumb.isNull() && !pending_.contains(it.path)) requestThumb(idx.row());
         return QVariant::fromValue(static_cast<const void*>(&it));
@@ -233,6 +262,8 @@ bool FilterProxy::filterAcceptsRow(int row, const QModelIndex&) const {
     if (kind == "image" && it->isRaw) return false;
     if (kind == "edited" && !it->edited) return false;
     if (kind == "exported" && !it->exports) return false;
+    if (kind == "cropped" && it->cropInfo.isEmpty()) return false;
+    if (kind == "uncropped" && !it->cropInfo.isEmpty()) return false;
     if (!text.isEmpty() && !it->name.contains(text, Qt::CaseInsensitive)) return false;
     return true;
 }
@@ -314,6 +345,20 @@ void ThumbDelegate::paint(QPainter* p, const QStyleOptionViewItem& opt, const QM
         p->setPen(QColor("#ddd"));
         p->drawText(QRectF(tx, r.top() + 8, w, 14), Qt::AlignCenter, t);
         tx += w + 3;
+    }
+    if (!it->cropInfo.isEmpty()) {
+        // ハサミ（フラグがあればその左）
+        const double cx = r.right() - (it->flag ? 44 : 22), cy = r.top() + 8;
+        p->setPen(Qt::NoPen);
+        p->setBrush(QColor(0, 0, 0, 160));
+        p->drawRoundedRect(QRectF(cx - 2, cy, 18, 14), 3, 3);
+        p->setPen(QPen(QColor("#eee"), 1.3));
+        p->setBrush(Qt::NoBrush);
+        // 刃（交差する 2 本）と持ち手（2 つの輪）
+        p->drawLine(QPointF(cx + 3, cy + 2), QPointF(cx + 11, cy + 9));
+        p->drawLine(QPointF(cx + 11, cy + 2), QPointF(cx + 3, cy + 9));
+        p->drawEllipse(QPointF(cx + 2.5, cy + 10.5), 2.2, 2.2);
+        p->drawEllipse(QPointF(cx + 11.5, cy + 10.5), 2.2, 2.2);
     }
     if (it->flag) {
         const double fx = r.right() - 20, fy = r.top() + 8;
@@ -416,7 +461,8 @@ FilterBar::FilterBar(FilterProxy* proxy, QWidget* parent) : QWidget(parent), pro
     h->addWidget(flag_);
     kind_ = new QComboBox;
     kind_->addItems({QStringLiteral("すべての種類"), QStringLiteral("RAW のみ"), QStringLiteral("JPEG・TIFF・PNG のみ"),
-                     QStringLiteral("編集済み"), QStringLiteral("書き出し済み")});
+                     QStringLiteral("編集済み"), QStringLiteral("書き出し済み"), QStringLiteral("切り抜きあり"),
+                     QStringLiteral("切り抜きなし")});
     h->addWidget(kind_);
     h->addSpacing(8);
     h->addWidget(new QLabel(QStringLiteral("並べ替え")));
@@ -451,7 +497,7 @@ void FilterBar::apply() {
     for (auto it = labelBtns_.begin(); it != labelBtns_.end(); ++it)
         if (it.value()->isChecked()) proxy_->labels.insert(it.key());
     proxy_->flag = QStringList{"all", "pick", "reject", "unflagged", "notreject"}[flag_->currentIndex()];
-    proxy_->kind = QStringList{"all", "raw", "image", "edited", "exported"}[kind_->currentIndex()];
+    proxy_->kind = QStringList{"all", "raw", "image", "edited", "exported", "cropped", "uncropped"}[kind_->currentIndex()];
     proxy_->sortKey = QStringList{"name", "date", "rating", "label"}[sort_->currentIndex()];
     proxy_->text = search_->text().trimmed();
     proxy_->refilter();
